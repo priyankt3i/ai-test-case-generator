@@ -6,6 +6,7 @@ import yaml
 import os
 import json
 from typing import Dict, Any, Tuple, List, Optional
+import requests
 
 # Langchain Core Imports
 from langchain_core.output_parsers import StrOutputParser
@@ -16,10 +17,11 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain # Using original method
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
-
+# *** ADD OLLAMA Imports ***
+from langchain_community.chat_models.ollama import ChatOllama
+from langchain_community.embeddings.ollama import OllamaEmbeddings
 
 # Import config and utilities
-# Make sure config.py and utils.py are in the same directory or accessible via PYTHONPATH
 try:
     from config import (
         LLM_PROVIDER_CONFIG, FALLBACK_EMBEDDING_PROVIDERS,
@@ -276,7 +278,76 @@ def _get_fallback_embeddings(fallback_openai_key: str) -> Optional[Embeddings]:
         log_message(f"Error initializing OpenAI fallback embeddings: {e}", "ERROR")
         st.error(f"Error initializing OpenAI fallback embeddings: {e}")
         return None
-
+    
+# *** NEW OLLAMA INITIALIZATION HELPER ***
+def _initialize_ollama(config: Dict, credentials: Dict, model_name: str) -> Tuple[Optional[BaseChatModel], Optional[Embeddings]]:
+    """Initializes Ollama LLM and Embeddings."""
+    log_message("Initializing Ollama provider...", "INFO")
+    # Provide default URL if not entered by user
+    base_url = credentials.get("base_url", "http://localhost:11434").strip()
+    if not base_url: # Handle empty string case
+        base_url = "http://localhost:11434"
+        log_message("Ollama Base URL empty, using default: http://localhost:11434", "WARNING")
+    # Model name comes from the dropdown selection, passed as model_name argument
+    if not model_name:
+        log_message("Ollama init failed: Model name missing.", "ERROR")
+        st.error("Ollama requires a model to be selected.")
+        return None, None
+    log_message(f"Ollama using Base URL: {base_url}, Model: {model_name}", "DEBUG")
+    # Check if Ollama server is reachable before initializing LangChain components
+    try:
+        response = requests.get(base_url, timeout=5) # Check base endpoint
+        response.raise_for_status() # Raise exception for bad status codes
+        log_message(f"Successfully connected to Ollama server at {base_url}", "DEBUG")
+    except requests.exceptions.ConnectionError:
+        error_msg = f"Ollama Connection Error: Could not connect to server at {base_url}. Is Ollama running?"
+        log_message(error_msg, "ERROR")
+        st.error(error_msg)
+        return None, None
+    except requests.exceptions.Timeout:
+        error_msg = f"Ollama Connection Timeout: Server at {base_url} did not respond quickly enough."
+        log_message(error_msg, "ERROR")
+        st.error(error_msg)
+        return None, None
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Ollama Request Error: Failed to query {base_url}. Error: {e}"
+        log_message(error_msg, "ERROR")
+        st.error(error_msg)
+        return None, None
+    # Proceed with LangChain initialization if connection test passed
+    try:
+        # Note: LangChain's Ollama classes handle module import internally if needed
+        llm = ChatOllama(
+            base_url=base_url,
+            model=model_name,
+            temperature=DEFAULT_TEMPERATURE
+        )
+        log_message(f"Ollama LLM Class ChatOllama initialized.", "DEBUG")
+        # Using the same model name for embeddings by default.
+        # For production, consider allowing a separate embedding model config.
+        embeddings = OllamaEmbeddings(
+            base_url=base_url,
+            model=model_name
+        )
+        log_message(f"Ollama Embeddings Class OllamaEmbeddings initialized (using model: {model_name}).", "DEBUG")
+        # Optional: Add a quick test call to ensure model is available
+        try:
+             llm.invoke("Hi")
+             log_message(f"Ollama model '{model_name}' responded successfully.", "DEBUG")
+        except Exception as model_e:
+             # Catch errors specifically related to the model (e.g., not found)
+             error_msg = f"Ollama Model Error: Failed to invoke model '{model_name}'. Is it pulled? Error: {model_e}"
+             log_message(error_msg, "ERROR")
+             st.error(error_msg)
+             return None, None # Fail initialization if model invocation fails
+        log_message("Ollama provider initialized successfully.", "INFO")
+        return llm, embeddings
+    except Exception as e:
+        error_msg = f"Error initializing Ollama LangChain components: {e}"
+        log_message(error_msg, "ERROR")
+        st.error(error_msg)
+        return None, None
+# *** END NEW OLLAMA HELPER ***
 
 # --- Main Initialization Function ---
 # (Code omitted for brevity)
@@ -299,6 +370,7 @@ def get_llm_and_embeddings(provider: str, model_name: str, credentials: Dict, fa
         "OpenAI": _initialize_openai, "Gemini": _initialize_gemini,
         "Claude": _initialize_claude, "AWS Bedrock": _initialize_bedrock,
         "Groq": _initialize_groq,
+        "Ollama": _initialize_ollama, # Added Ollama
     }
     init_func = init_functions.get(provider)
     if not init_func:
@@ -321,9 +393,14 @@ def get_llm_and_embeddings(provider: str, model_name: str, credentials: Dict, fa
         if not is_fallback_provider or not embeddings: return None, None
 
     if not embeddings:
-         log_message(f"Embeddings initialization final check failed for {provider}. RAG will not work.", "ERROR")
-         st.error(f"Embeddings initialization failed for {provider}. RAG features will not work.")
-         return llm, None # Return LLM if it succeeded
+        if provider == "Ollama":
+            log_message(f"Ollama embeddings failed to initialize even if LLM succeeded.", "ERROR")
+            st.error(f"Ollama embeddings failed. RAG will not work.")
+        elif not is_fallback_provider: # Non-fallback, non-Ollama providers
+            log_message(f"Embeddings initialization final check failed for {provider}. RAG will not work.", "ERROR")
+            st.error(f"Embeddings initialization failed for {provider}. RAG features will not work.")
+        # Allow fallback providers to proceed without embeddings if LLM is ok
+        return llm, None # Return LLM if it succeeded
 
     log_message(f"LLM and Embeddings initialized successfully for {provider}.", "INFO")
     return llm, embeddings
@@ -338,7 +415,19 @@ def check_credentials(provider: str, credentials: Dict, fallback_key: str, requi
     missing = []
     required_creds = config.get("credentials", [])
     for key in required_creds:
+        # For Ollama, 'model' comes from dropdown, 'base_url' might be empty (use default)
+        if provider == "Ollama" and key == "base_url":
+             continue # Don't require base_url to be non-empty, use default
+        if provider == "Ollama" and key == "model":
+             # Model is selected via dropdown, not direct credential input usually
+             # Check if model_name exists in session state instead? Or rely on later check.
+             # Let's skip strict check here, rely on get_llm_and_embeddings check.
+             continue
+        # Standard check for other providers/credentials
+        if not credentials.get(key, "").strip():
+            missing.append(key.replace("_", " ").title())
         if not credentials.get(key, "").strip(): missing.append(key.replace("_", " ").title())
+    # Check for fallback key requirement
     needs_fallback = provider in FALLBACK_EMBEDDING_PROVIDERS
     if require_fallback_for_rag and needs_fallback and not fallback_key.strip(): missing.append("OpenAI API Key (for RAG Fallback)")
     if missing: return False, f"Missing credentials for {provider}: {', '.join(missing)}."
