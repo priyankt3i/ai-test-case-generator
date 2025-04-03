@@ -1,6 +1,6 @@
 [theme]
 base="light"
 primaryColor="#00c3ff"
-secondaryBackgroundColor="#ffffff"
+secondaryBackgroundColor="#f5f5f5"
 textColor="#4f5156"
-font="monospace" # Or "serif" or "monospace"
+font="monospace"

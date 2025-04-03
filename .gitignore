@@ -2,3 +2,6 @@
 .env
 app_context/eSales.yaml
 app_context/TruValidate.yaml
+__pycache__/config.cpython-312.pyc
+__pycache__/llm_integration.cpython-312.pyc
+__pycache__/ui_components.cpython-312.pyc
