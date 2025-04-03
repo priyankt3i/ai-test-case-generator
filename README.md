@@ -20,7 +20,7 @@ This Streamlit application leverages the power of Large Language Models (LLMs) v
     * Creates vector embeddings using the selected provider's model (or OpenAI fallback).
     * Retrieves relevant document sections based on the target application.
     * Uses an LLM chain (`create_stuff_documents_chain`) to generate test cases based on retrieved context and user query.
-* **🧩 Optional YAML Context:** Enhance test case generation by providing additional context (e.g., API details, data models, existing test snippets) via `.yaml` files placed in an `app_context` folder. Context can be selected per identified application. (Upcomming: Multiple files and multiple formaat like .docx, .txt, .md, .pdf, .json)
+* **🧩 Optional YAML Context:** Enhance test case generation by providing additional context (e.g., API details, data models, existing test snippets) via `.yaml` files placed in an `app_context` folder. Context can be selected per identified application. (Upcomming: Multiple files and multiple format like .docx, .txt, .md, .pdf, .json)
 * **✍️ Test Case Refactoring:** Modify and refine individual generated test cases using LLM instructions via a dedicated UI tab.
 * **📊 Results Display:** Presents generated test cases clearly in tables within expandable sections per application. Includes summary metrics.
 * **📋 Session Logging:** Provides a dedicated "Session Logs" tab acting as a UI console, displaying debug messages and errors for the current session. Includes "Clear Log" and "Copy Log" functionality.
