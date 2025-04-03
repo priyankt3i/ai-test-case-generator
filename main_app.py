@@ -39,6 +39,23 @@ except st.errors.StreamlitAPIException as e:
 except Exception as e: # Catch other potential errors during set_page_config
      st.error(f"Error setting page config: {e}")
 
+# --- Custom CSS Injection for Larger Tabs ---
+# NOTE: Selectors might change in future Streamlit versions. Inspect element if needed.
+st.markdown("""
+<style>          
+    /* Target the specific test ID for tab buttons, use !important for specificity */
+    button[data-testid="stTab"] {
+        font-size: 5rem !important; /* Adjust font size */
+        padding: 0.75rem 1rem !important; /* Adjust padding */
+    }
+            
+    button[data-testid="stTab"] p {
+        font-size: 1.5rem !important;
+        margin: 0.3 !important; /* Remove default paragraph margin */
+    }
+</style>
+""", unsafe_allow_html=True)
+# --- End Custom CSS ---
 
 # --- Initialize Session State ---
 # (init_session_state function remains the same - omitted for brevity)

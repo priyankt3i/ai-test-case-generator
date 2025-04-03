@@ -74,7 +74,18 @@ LLM_PROVIDER_CONFIG = {
         "embeddings_module": None,
         "embeddings_class": None,
         "notes": "Requires Groq API Key. **RAG embedding uses OpenAI fallback (requires OpenAI API key below).**"
+    },
+    # *** NEW OLLAMA ENTRY ***
+    "Ollama": {
+        "models": ["llama3", "mistral", "phi3", "codellama", "gemma"], # Common models, user needs them pulled
+        "credentials": ["base_url"], # Base URL for server, model selected from list
+        "llm_module": "langchain_community.chat_models.ollama", # Path to ChatOllama
+        "llm_class": "ChatOllama",
+        "embeddings_module": "langchain_community.embeddings.ollama", # Path to OllamaEmbeddings
+        "embeddings_class": "OllamaEmbeddings",
+        "notes": "Requires Ollama server running locally. Ensure the selected model is pulled (`ollama pull <model_name>`). Default Base URL is http://localhost:11434."
     }
+    # *** END NEW OLLAMA ENTRY ***
 }
 FALLBACK_EMBEDDING_PROVIDERS = ["Claude", "Groq"]
 

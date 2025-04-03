@@ -75,10 +75,21 @@ def render_llm_config_sidebar():
         st.session_state.api_credentials = {}
 
     # Initialize missing credential keys in session state
+    # Also, set default for Ollama base_url if needed
     for cred_key in required_creds:
         if cred_key not in st.session_state.api_credentials:
-            st.session_state.api_credentials[cred_key] = ""
+            # *** Set default for Ollama base_url ***
+            if selected_provider == "Ollama" and cred_key == "base_url":
+                st.session_state.api_credentials[cred_key] = "http://localhost:11434"
+            else:
+                st.session_state.api_credentials[cred_key] = ""
 
+    # Render input fields for required credentials
+    for cred_key in required_creds:
+        # Skip rendering 'model' for Ollama as it's handled by dropdown above
+        if selected_provider == "Ollama" and cred_key == "model":
+             continue
+        
     # Render input fields for required credentials
     for cred_key in required_creds:
         widget_key = f"cred_{cred_key}_widget" # Unique key for the widget itself
