@@ -29,14 +29,12 @@ This Streamlit application leverages the power of Large Language Models (LLMs) v
 ## 🛠️ Technologies Used
 
 * **Frontend:** Streamlit
-* **LLM Orchestration:** LangChain & LangChain Community/Core
+* **LLM Orchestration:** `LangChain` & `LangChain Community/Core`
 * **LLM Providers:** `langchain-openai`, `langchain-google-genai`, `langchain-anthropic`, `langchain-aws`, `langchain-groq`
 * **Vector Store:** FAISS (`faiss-cpu`)
 * **Document Parsing:** `python-mammoth`
-* **Data Handling:** Pandas
-* **Configuration:** PyYAML
-* **UI Components:** `streamlit-clipboard`
-* **Language:** Python 3
+* **Data Handling:** `Pandas`
+* **Configuration:** `PyYAML`
 
 ## 🖼️ Screenshots
 
@@ -44,7 +42,8 @@ This Streamlit application leverages the power of Large Language Models (LLMs) v
 
 ## 📁 Project Structure
 
-'''
+```txt
+
 ai-test_case_generator/
 ├── main_app.py         # Main Streamlit script, UI orchestration
 ├── config.py           # Configuration (LLM providers, prompts, constants)
@@ -58,7 +57,7 @@ ai-test_case_generator/
 │   └── AppName2.yml
 └── requirements.txt    # Python dependencies
 
-'''
+```
 
 ## ⚙️ Setup Instructions
 
@@ -68,7 +67,7 @@ ai-test_case_generator/
     * Git (optional, for cloning).
 
 2.  **Clone or Download:**
-    * Clone the repository: `git clone <repository_url>`
+    * Clone the repository: `git clone https://github.com/priyankt3i/ai-test-case-generator.git`
     * OR Download the source code files (`main_app.py`, `config.py`, etc.) into a single project directory.
 
 3.  **Create Virtual Environment (Recommended):**
