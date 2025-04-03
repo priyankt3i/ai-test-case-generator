@@ -2,3 +2,4 @@
 .env
 app_context/eSales.yaml
 app_context/TruValidate.yaml
+__pycache__/
