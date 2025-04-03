@@ -40,10 +40,11 @@ This Streamlit application leverages the power of Large Language Models (LLMs) v
 
 ## 🖼️ Screenshots
 
-![Main Interface](./Public/main.jpg)
+![Main Interface](./public/main.jpg)
 
 ## 📁 Project Structure
 
+'''
 ai-test_case_generator/
 ├── main_app.py         # Main Streamlit script, UI orchestration
 ├── config.py           # Configuration (LLM providers, prompts, constants)
@@ -56,6 +57,8 @@ ai-test_case_generator/
 │   ├── AppName1.yaml
 │   └── AppName2.yml
 └── requirements.txt    # Python dependencies
+
+'''
 
 ## ⚙️ Setup Instructions
 

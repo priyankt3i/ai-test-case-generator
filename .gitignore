@@ -1,3 +1,2 @@
-app_context/*
-!app_context/
+
 .env
