@@ -54,7 +54,7 @@ test_case_generator/├── main_app.py         # Main Streamlit script, UI or
 ## ⚙️ Setup Instructions
 
 1.  **Prerequisites:**
-    * Python (version 3.9 or higher recommended).
+    * Python (version 3.11.9 or higher recommended). Test on 3.12.3
     * `pip` (Python package installer).
     * Git (optional, for cloning).
 
