@@ -28,7 +28,7 @@ This Streamlit application leverages the power of Large Language Models (LLMs) v
 
 ## 🛠️ Technologies Used
 
-* **Frontend:** Streamlit
+* **Frontend:** `Streamlit`
 * **LLM Orchestration:** `LangChain` & `LangChain Community/Core`
 * **LLM Providers:** `langchain-openai`, `langchain-google-genai`, `langchain-anthropic`, `langchain-aws`, `langchain-groq`
 * **Vector Store:** FAISS (`faiss-cpu`)
