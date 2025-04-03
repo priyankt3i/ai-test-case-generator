@@ -40,17 +40,23 @@ This Streamlit application leverages the power of Large Language Models (LLMs) v
 
 ## 🖼️ Screenshots
 
-*(Placeholder: You can add screenshots of the application UI here)*
-
-* *Screenshot of the main interface with sidebar.*
-* *Screenshot showing identified applications and context selection.*
-* *Screenshot of the generated results table.*
-* *Screenshot of the refactoring tab.*
-* *Screenshot of the session logs tab.*
+![Main Interface](./Public/main.jpg)
 
 ## 📁 Project Structure
 
-test_case_generator/├── main_app.py         # Main Streamlit script, UI orchestration├── config.py           # Configuration (LLM providers, prompts, constants)├── utils.py            # Utility functions (logging, imports, sanitization)├── file_processing.py  # .docx text extraction├── llm_integration.py  # LangChain/LLM logic (init, identify, generate, refactor)├── excel_export.py     # Excel file generation logic├── ui_components.py    # Functions for rendering UI parts (sidebar, results)├── app_context/        # Optional: Folder for user-provided YAML context files│   ├── AppName1.yaml│   └── AppName2.yml└── requirements.txt    # Python dependencies
+ai-test_case_generator/
+├── main_app.py         # Main Streamlit script, UI orchestration
+├── config.py           # Configuration (LLM providers, prompts, constants)
+├── utils.py            # Utility functions (logging, imports, sanitization)
+├── file_processing.py  # .docx text extraction
+├── llm_integration.py  # LangChain/LLM logic (init, identify, generate, refactor)
+├── excel_export.py     # Excel file generation logic
+├── ui_components.py    # Functions for rendering UI parts (sidebar, results)
+├── app_context/        # Optional: Folder for user-provided YAML context files
+│   ├── AppName1.yaml
+│   └── AppName2.yml
+└── requirements.txt    # Python dependencies
+
 ## ⚙️ Setup Instructions
 
 1.  **Prerequisites:**
