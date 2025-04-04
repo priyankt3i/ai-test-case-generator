@@ -17,9 +17,17 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain # Using original method
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
-# *** ADD OLLAMA Imports ***
-from langchain_community.chat_models.ollama import ChatOllama
-from langchain_community.embeddings.ollama import OllamaEmbeddings
+# *** UPDATED OLLAMA Imports ***
+try:
+    from langchain_ollama import ChatOllama # Import from new package
+    from langchain_ollama import OllamaEmbeddings # Import from new package
+    LANGCHAIN_OLLAMA_AVAILABLE = True
+except ImportError:
+    # Keep old imports as fallback ONLY IF new package fails? Or just error? Let's error.
+    # from langchain_community.chat_models.ollama import ChatOllama
+    # from langchain_community.embeddings.ollama import OllamaEmbeddings
+    LANGCHAIN_OLLAMA_AVAILABLE = False
+    # We'll check this flag in the init function
 
 # Import config and utilities
 try:
@@ -437,7 +445,17 @@ def check_credentials(provider: str, credentials: Dict, fallback_key: str, requi
 # --- LLM Interaction Functions ---
 # (Code omitted for brevity)
 def identify_applications(text: str, llm: BaseChatModel) -> List[str]:
-    """Identifies application names from text using the provided LLM."""
+    """
+    Identifies application names from text using the provided LLM.
+    Logs raw output before parsing.
+
+    Args:
+        text: The input text (e.g., from requirements doc).
+        llm: The initialized LangChain Chat Model.
+
+    Returns:
+        A list of identified application names, or an empty list on failure.
+    """
     log_message("Starting application identification...", "INFO")
     if not text:
         log_message("Identification failed: Input text is empty.", "ERROR")
@@ -456,7 +474,9 @@ def identify_applications(text: str, llm: BaseChatModel) -> List[str]:
         with st.spinner(f"Asking LLM ({llm.__class__.__name__}) to identify applications..."):
              result_str = app_chain.invoke({"text": text})
              log_message("LLM invocation for identification complete.", "DEBUG")
-
+             # *** ADDED LOGGING FOR RAW OUTPUT ***
+             log_message(f"Raw LLM output for identification:\n---\n{result_str}\n---", "DEBUG")
+             # *** END ADDED LOGGING ***
         parsed_apps = parse_json_output(result_str, expected_type=list)
 
         if parsed_apps is None:

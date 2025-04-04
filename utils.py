@@ -7,6 +7,7 @@ import importlib
 import streamlit as st
 import datetime # Added for timestamping logs
 import json # Keep for parse_json_output
+import ast # *** Import ast module ***
 
 # Make sure config.py is accessible
 try:
@@ -139,7 +140,7 @@ def get_available_context_files() -> list[str]:
     return unique_sorted_files
 
 # --- JSON Parsing ---
-def parse_json_output(llm_output: str, expected_type: type = list):
+def parse_json_output_OLD(llm_output: str, expected_type: type = list):
     """
     Attempts to parse JSON from LLM output, handling markdown code blocks. Logs details.
 
@@ -162,9 +163,9 @@ def parse_json_output(llm_output: str, expected_type: type = list):
         r'```\s*(.*)\s*```'      # Generic code block (less specific)
     ]
     # Add raw patterns based on expected type AFTER code block patterns
-    if expected_type == list:
+    if expected_type is list:
         patterns.append(r'(\[.*\])') # Raw list, capture group 1
-    elif expected_type == dict:
+    elif expected_type is dict:
         patterns.append(r'(\{.*\})') # Raw dict, capture group 1
 
     json_str = None
@@ -176,8 +177,8 @@ def parse_json_output(llm_output: str, expected_type: type = list):
             potential_json = match.group(1).strip()
             log_message(f"Regex match found, potential JSON: '{potential_json[:100]}...'", "DEBUG")
             # Basic check if it looks like the expected type
-            looks_like_list = expected_type == list and potential_json.startswith('[') and potential_json.endswith(']')
-            looks_like_dict = expected_type == dict and potential_json.startswith('{') and potential_json.endswith('}')
+            looks_like_list = expected_type is list and potential_json.startswith('[') and potential_json.endswith(']')
+            looks_like_dict = expected_type is dict and potential_json.startswith('{') and potential_json.endswith('}')
 
             if looks_like_list or looks_like_dict:
                  json_str = potential_json
@@ -191,10 +192,10 @@ def parse_json_output(llm_output: str, expected_type: type = list):
         # If no markdown or raw match, try parsing the whole string if it looks right
         log_message("No regex match found, trying full string parsing.", "DEBUG")
         trimmed_output = llm_output.strip()
-        if expected_type == list and trimmed_output.startswith('[') and trimmed_output.endswith(']'):
+        if expected_type is list and trimmed_output.startswith('[') and trimmed_output.endswith(']'):
             json_str = trimmed_output
             log_message("Using full trimmed output as potential list.", "DEBUG")
-        elif expected_type == dict and trimmed_output.startswith('{') and trimmed_output.endswith('}'):
+        elif expected_type is dict and trimmed_output.startswith('{') and trimmed_output.endswith('}'):
             json_str = trimmed_output
             log_message("Using full trimmed output as potential dict.", "DEBUG")
 
@@ -226,3 +227,96 @@ def parse_json_output(llm_output: str, expected_type: type = list):
         log_message(f"An unexpected error occurred during JSON parsing: {e}", "ERROR")
         st.error(f"An unexpected error occurred during JSON parsing: {e}")
         return None
+
+# --- JSON / Literal Parsing ---
+# *** MODIFIED FUNCTION ***
+def parse_json_output(llm_output: str, expected_type: type = list):
+    """
+    Attempts to parse JSON or Python literal lists/dicts from LLM output,
+    handling markdown code blocks and preferring JSON but falling back to ast.literal_eval.
+
+    Args:
+        llm_output: The raw string output from the LLM.
+        expected_type: The expected Python type (e.g., list, dict).
+
+    Returns:
+        The parsed Python object (list or dict) or None if parsing fails
+        or type mismatch.
+    """
+    log_message(f"Attempting to parse LLM output as {expected_type.__name__}", "DEBUG")
+    if not llm_output:
+        log_message("Parsing failed: LLM output is empty.", "WARNING")
+        return None
+
+    extracted_str = None
+    # Prioritize extracting from ```json blocks
+    json_block_match = re.search(r'```json\s*(.*)\s*```', llm_output, re.DOTALL | re.IGNORECASE)
+    if json_block_match:
+        log_message("Found ```json block.", "DEBUG")
+        extracted_str = json_block_match.group(1).strip()
+    else:
+        # Try generic code block
+        code_block_match = re.search(r'```\s*(.*)\s*```', llm_output, re.DOTALL | re.IGNORECASE)
+        if code_block_match:
+            log_message("Found generic ``` block.", "DEBUG")
+            extracted_str = code_block_match.group(1).strip()
+        else:
+            # If no code blocks, try finding raw list/dict structure
+            log_message("No code blocks found, searching for raw list/dict.", "DEBUG")
+            raw_pattern = r'(\[.*\])' if expected_type == list else r'(\{.*\})'
+            raw_match = re.search(raw_pattern, llm_output, re.DOTALL)
+            if raw_match:
+                 log_message("Found raw list/dict pattern match.", "DEBUG")
+                 extracted_str = raw_match.group(1).strip()
+            else:
+                 # Final fallback: use the whole string if it looks right
+                 log_message("No raw pattern match, checking full trimmed string.", "DEBUG")
+                 trimmed_output = llm_output.strip()
+                 looks_like_list = expected_type == list and trimmed_output.startswith('[') and trimmed_output.endswith(']')
+                 looks_like_dict = expected_type == dict and trimmed_output.startswith('{') and trimmed_output.endswith('}')
+                 if looks_like_list or looks_like_dict:
+                      extracted_str = trimmed_output
+                      log_message("Using full trimmed output as potential literal.", "DEBUG")
+
+    if not extracted_str:
+         log_message(f"Could not extract a plausible {expected_type.__name__} structure.", "WARNING")
+         st.warning(f"Could not find valid {expected_type.__name__} structure in LLM output.")
+         return None
+
+    # Attempt parsing - Try JSON first, then literal_eval
+    parsed_data = None
+    try:
+        # Attempt 1: Strict JSON parsing
+        log_message(f"Attempting json.loads on extracted string: '{extracted_str[:100]}...'", "DEBUG")
+        parsed_data = json.loads(extracted_str)
+        log_message("json.loads successful.", "INFO")
+    except json.JSONDecodeError as json_err:
+        log_message(f"json.loads failed ({json_err}). Trying ast.literal_eval.", "WARNING")
+        try:
+            # Attempt 2: Safe Python literal parsing
+            log_message(f"Attempting ast.literal_eval on extracted string: '{extracted_str[:100]}...'", "DEBUG")
+            parsed_data = ast.literal_eval(extracted_str)
+            log_message("ast.literal_eval successful.", "INFO")
+        except (ValueError, SyntaxError, MemoryError, TypeError) as ast_err: # Catch potential errors from literal_eval
+            log_message(f"ast.literal_eval also failed: {type(ast_err).__name__} - {ast_err}", "ERROR")
+            st.error(f"Failed to parse output as JSON or Python literal: {ast_err}")
+            st.text_area("Invalid String (for debugging):", extracted_str[:500]+"...", height=100)
+            return None
+        except Exception as e: # Catch any other unexpected errors
+            log_message(f"Unexpected error during ast.literal_eval: {type(e).__name__} - {e}", "ERROR")
+            st.error(f"Unexpected parsing error: {e}")
+            return None
+
+    # Check type if parsing succeeded
+    if parsed_data is not None:
+        if isinstance(parsed_data, expected_type):
+            log_message(f"Parsed data type matches expected type ({expected_type.__name__}).", "INFO")
+            return parsed_data
+        else:
+            log_message(f"Parsed data type is {type(parsed_data).__name__}, expected {expected_type.__name__}.", "WARNING")
+            st.warning(f"LLM output parsed, but type is {type(parsed_data).__name__}, expected {expected_type.__name__}.")
+            return None # Type mismatch
+
+    # Should not be reachable if extraction worked but both parses failed and were caught
+    log_message("Parsing failed through unknown means.", "ERROR")
+    return None
