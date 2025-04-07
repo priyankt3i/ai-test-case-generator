@@ -1,5 +1,4 @@
-# utils.py
-"""General utility functions for the application."""
+# """General utility functions for the application."""
 
 import re
 import os
@@ -272,8 +271,8 @@ def parse_json_output(llm_output: str, expected_type: type = list):
                  # Final fallback: use the whole string if it looks right
                  log_message("No raw pattern match, checking full trimmed string.", "DEBUG")
                  trimmed_output = llm_output.strip()
-                 looks_like_list = expected_type == list and trimmed_output.startswith('[') and trimmed_output.endswith(']')
-                 looks_like_dict = expected_type == dict and trimmed_output.startswith('{') and trimmed_output.endswith('}')
+                 looks_like_list = expected_type is list and trimmed_output.startswith('[') and trimmed_output.endswith(']')
+                 looks_like_dict = expected_type is dict and trimmed_output.startswith('{') and trimmed_output.endswith('}')
                  if looks_like_list or looks_like_dict:
                       extracted_str = trimmed_output
                       log_message("Using full trimmed output as potential literal.", "DEBUG")

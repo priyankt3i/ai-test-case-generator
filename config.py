@@ -1,5 +1,4 @@
-# config.py
-"""Stores configuration constants and settings for the application."""
+# """Stores configuration constants and settings for the application."""
 
 import os
 
@@ -61,6 +60,28 @@ User Modification Instructions:
 ```
 
 Updated Test Case JSON Object Only:
+"""
+
+# --- NEW: Bulk Refactoring Prompt ---
+REFACTOR_ALL_TC_PROMPT_TEMPLATE = """You are an expert QA Analyst modifying a list of existing test cases based on general user instructions. Apply the instructions thoughtfully to each test case in the provided list.
+
+Return *only* a complete JSON list containing the updated JSON objects for *all* the test cases provided.
+- Ensure each object in the returned list is a valid JSON object representing a test case.
+- Preserve the original `Test Case ID` for each test case unless the instructions specifically ask to change IDs across the board.
+- Ensure all original fields are present in each updated test case object unless the instructions specifically dictate removal or modification.
+- The number of test cases in the output list should match the number in the input list.
+
+Original Test Case List (JSON):
+```json
+{original_tc_list_json}
+```
+
+User Modification Instructions (Apply to ALL test cases):
+```
+{user_instructions}
+```
+
+Updated Test Case List (JSON Array Only):
 """
 
 

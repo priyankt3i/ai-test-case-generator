@@ -10,10 +10,10 @@ import os
 # Make sure these files exist in the same directory
 try:
     import config
-    import utils
-    import file_processing
-    import llm_integration
-    import excel_export
+    import helper.utils as utils
+    import helper.file_processing as file_processing
+    import llm_integration_core
+    import helper.excel_export as excel_export
     import ui_components
 except ModuleNotFoundError as e:
      st.error(f"ERROR: Failed to import a required module: {e}. Ensure all .py files (config, utils, etc.) are present.")
@@ -154,7 +154,7 @@ if current_file:
                 st.session_state.proposed_modification_data = None; st.session_state.original_tc_data_for_diff = None
                 st.session_state.refactor_request = None
 
-                creds_ok, creds_msg = llm_integration.check_credentials(
+                creds_ok, creds_msg = llm_integration_core.check_credentials(
                     st.session_state.llm_provider, st.session_state.api_credentials,
                     st.session_state.openai_fallback_api_key, require_fallback_for_rag=False
                 )
@@ -165,12 +165,12 @@ if current_file:
                      utils.log_message(f"Identify failed: No model selected for {st.session_state.llm_provider}.", "WARNING")
                      st.warning(f"Cannot identify: No model selected for {st.session_state.llm_provider}.")
                 else:
-                    llm, _ = llm_integration.get_llm_and_embeddings(
+                    llm, _ = llm_integration_core.get_llm_and_embeddings(
                         st.session_state.llm_provider, st.session_state.model_name,
                         st.session_state.api_credentials, st.session_state.openai_fallback_api_key
                     )
                     if llm:
-                        identified = llm_integration.identify_applications(st.session_state.extracted_text, llm)
+                        identified = llm_integration_core.identify_applications(st.session_state.extracted_text, llm)
                         st.session_state.identified_applications = identified
                         if identified:
                             st.success(f"Identified {len(identified)} potential applications.")
@@ -200,7 +200,7 @@ if current_file:
                     st.session_state.proposed_modification_data = None; st.session_state.original_tc_data_for_diff = None
                     st.session_state.refactor_request = None
 
-                    creds_ok, creds_msg = llm_integration.check_credentials(
+                    creds_ok, creds_msg = llm_integration_core.check_credentials(
                         st.session_state.llm_provider, st.session_state.api_credentials,
                         st.session_state.openai_fallback_api_key, require_fallback_for_rag=True
                     )
@@ -212,13 +212,13 @@ if current_file:
                          st.error(f"Cannot generate: No model selected for {st.session_state.llm_provider}.")
                     else:
                         st.info(f"Initializing generation using {st.session_state.llm_provider} ({st.session_state.model_name})...")
-                        llm, embeddings = llm_integration.get_llm_and_embeddings(
+                        llm, embeddings = llm_integration_core.get_llm_and_embeddings(
                             st.session_state.llm_provider, st.session_state.model_name,
                             st.session_state.api_credentials, st.session_state.openai_fallback_api_key
                         )
                         if llm and embeddings:
                             utils.log_message("LLM and Embeddings ready, calling generate_test_cases...", "INFO")
-                            results = llm_integration.generate_test_cases(
+                            results = llm_integration_core.generate_test_cases(
                                 st.session_state.extracted_text, st.session_state.selected_applications,
                                 st.session_state.context_file_selections, llm, embeddings
                             )
@@ -249,7 +249,7 @@ if current_file:
                  st.session_state.refactor_request = None # Consume the request
                  utils.log_message(f"Processing refactor request for TC '{req['tc_id']}' in app '{req['app_name']}'.", "INFO")
 
-                 creds_ok, creds_msg = llm_integration.check_credentials(
+                 creds_ok, creds_msg = llm_integration_core.check_credentials(
                      st.session_state.llm_provider, st.session_state.api_credentials,
                      st.session_state.openai_fallback_api_key, require_fallback_for_rag=False
                  )
@@ -260,13 +260,13 @@ if current_file:
                      utils.log_message(f"Refactor failed: No model selected for {st.session_state.llm_provider}.", "ERROR")
                      st.error(f"Cannot refactor: No model selected for {st.session_state.llm_provider}.")
                  else:
-                     llm, _ = llm_integration.get_llm_and_embeddings(
+                     llm, _ = llm_integration_core.get_llm_and_embeddings(
                          st.session_state.llm_provider, st.session_state.model_name,
                          st.session_state.api_credentials, st.session_state.openai_fallback_api_key
                      )
                      if llm:
                           with st.spinner(f"Refactoring Test Case '{req['tc_id']}'..."):
-                                refactored_data = llm_integration.refactor_single_test_case(
+                                refactored_data = llm_integration_core.refactor_single_test_case(
                                     req['app_name'], req['tc_id'], req['instructions'],
                                     req['original_data'], llm
                                 )
