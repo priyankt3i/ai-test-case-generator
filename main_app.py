@@ -1,4 +1,3 @@
-# main_app.py
 """
 Streamlit application main script.
 Orchestrates UI, state management, and calls to processing modules.
