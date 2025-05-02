@@ -98,7 +98,12 @@ LLM_PROVIDER_CONFIG = {
         # No 'prompt_templates' needed if defaults work well for OpenAI
     },
     "Gemini": {
-        "models": ["gemini-2.5-pro-preview-03-25", "gemini-2.5.pro-exp-03-25", "gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-pro"],
+        "models": ["gemini-2.5-pro-preview-03-25", 
+                   "gemini-2.5-flash-preview-04-17",
+                   "gemini-2.5.pro-exp-03-25", 
+                   "gemini-1.5-flash-latest", 
+                   "gemini-1.5-pro-latest", 
+                   "gemini-pro"],
         "credentials": ["api_key"],
         "llm_module": "langchain_google_genai",
         "llm_class": "ChatGoogleGenerativeAI",
