@@ -21,6 +21,10 @@ Return *only* a Python-style list of strings, where each string is an identified
 
 Example: ["App One", "System Two", "Reporting Module"]
 
+Important to Remember: Customer Interface is also called CI or eSales. So make sure you do not duplicate. Prefer the Name - eSales in Place of CI or Customer Interface.
+
+Important to Remember: Agent Interface is also called AI or Agent Web (portal). So make sure you do not duplicate. Prefer the Name - AgentWeb in Place of AI or Agent Interface.
+
 If no applications can be clearly identified, return an empty list: []
 
 Requirements Text:
@@ -30,7 +34,7 @@ Identified Applications (Python list format only):
 """
 
 GENERATE_TC_PROMPT_TEMPLATE = """You are an expert QA Analyst generating test cases based on provided requirements context. Create detailed, actionable test cases.
-**Carefully consider both the 'Requirements Context Retrieved' below AND any 'Additional Context' provided within the 'User Input Query/Focus' when generating the test cases, especially for populating fields like 'Test Data'.**
+**Carefully consider both the 'Requirements Context Retrieved' below and each test cases should be mapped to FR or BR ID, for traceability AND any 'Additional Context' provided within the 'User Input Query/Focus' when generating the test cases, especially for populating fields like 'Test Data'.**
 
 Format your response *only* as a single JSON list of objects. Each object represents a test case and must include these fields: `{field_names}`.
 Ensure the JSON is valid. Do not include any text before or after the JSON list.
@@ -195,7 +199,7 @@ RETRIEVER_SEARCH_K = 5
 
 # --- Excel Export Settings ---
 EXCEL_EXPORT_FILENAME = "generated_test_cases.xlsx"
-EXCEL_EXPECTED_COLUMNS = ['Test Case ID', 'Test Case Name', 'Description', 'Preconditions', 'Test Steps', 'Expected Results', 'Test Data', 'Priority']
+EXCEL_EXPECTED_COLUMNS = ['Test Case ID', 'FR/BR ID', 'Test Case Name', 'Description', 'Preconditions', 'Test Steps', 'Expected Results', 'Test Data', 'Priority']
 EXCEL_MAX_COL_WIDTH = 60
 EXCEL_DEFAULT_COL_WIDTH = 20
 EXCEL_SHEET_NAME_MAX_LEN = 31
