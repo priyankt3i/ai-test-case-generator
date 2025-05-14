@@ -4,6 +4,7 @@ Orchestrates UI, state management, and calls to processing modules.
 """
 import streamlit as st
 import os
+import re # Import regex module
 # import json # No longer needed for this clipboard method
 
 # *** Import streamlit-clipboard ***
@@ -112,6 +113,14 @@ def init_session_state():
     # Initialize Log Messages List
     if 'log_messages' not in st.session_state: st.session_state.log_messages = []
 
+    # --- NEW: AI Review Test Cases State ---
+    if 'ai_review_selected_app' not in st.session_state: st.session_state.ai_review_selected_app = None
+    if 'ai_review_results_raw' not in st.session_state: st.session_state.ai_review_results_raw = None
+    if 'ai_review_suggestions_processed' not in st.session_state: st.session_state.ai_review_suggestions_processed = None # Will store structured suggestions
+    if 'ai_review_user_decisions' not in st.session_state: st.session_state.ai_review_user_decisions = {} # Maps suggestion_id to 'accept'/'reject'
+    if 'ai_review_inprogress_flag' not in st.session_state: st.session_state.ai_review_inprogress_flag = False
+    # --- END NEW AI Review State ---
+
 init_session_state()
 
 # --- Sidebar ---
@@ -215,9 +224,10 @@ if current_file:
     # --- Main Workflow Tabs (only if text is available) ---
     if st.session_state.extracted_text:
         # Added tab_log
-        tab1, tab2, tab_log = st.tabs([
+        tab1, tab2, tab3, tab_log = st.tabs([
             "Generate Test Cases",
-            "Refactor Test Cases",
+            "AI Review Test Cases",
+            "Manual Refactor Test Cases",
             "📜 Session Logs"
         ])
 
@@ -351,10 +361,290 @@ if current_file:
                 st.header("Generated Results")
                 ui_components.display_results(st.session_state.generated_test_cases)
 
-
-        # === Refactor Tab ===
+        # === AI Review Test Cases Tab ===
         with tab2:
-            st.header("Refactor Generated Test Cases")
+            st.header("🤖 AI Review Test Cases")
+            st.caption("Use AI to review generated test cases for coverage, gaps, and suggest improvements.")
+
+            if not st.session_state.get('generated_test_cases'):
+                st.info("⬅️ Please generate test cases in the 'Generate Test Cases' tab first.")
+            else:
+                valid_apps_for_review = [
+                    app for app, cases in st.session_state.generated_test_cases.items()
+                    if isinstance(cases, list) and cases and all(isinstance(tc, dict) for tc in cases)
+                ]
+
+                if not valid_apps_for_review:
+                    st.warning("No applications with valid generated test cases available for review.")
+                else:
+                    # --- Application Selection for AI Review ---
+                    if st.session_state.ai_review_selected_app not in valid_apps_for_review:
+                        st.session_state.ai_review_selected_app = valid_apps_for_review[0] if valid_apps_for_review else None
+
+                    selected_app_for_review = st.selectbox(
+                        "Select Application to Review:",
+                        options=valid_apps_for_review,
+                        key="ai_review_selected_app", # Uses the session state key
+                        help="Choose an application whose test cases you want the AI to review."
+                    )
+
+                    if selected_app_for_review:
+                        st.markdown("---")
+                        st.subheader(f"Reviewing Test Cases for: `{selected_app_for_review}`")
+
+                        # Display summary of inputs to be used by AI
+                        with st.expander("View Inputs for AI Review", expanded=False):
+                            st.markdown("**Main Requirements Document (Summary):**")
+                            st.text_area("Requirements Summary", st.session_state.extracted_text[:1000] + "..." if st.session_state.extracted_text else "N/A", height=150, disabled=True)
+
+                            st.markdown("**Uploaded Context Files:**")
+                            app_context_files = st.session_state.uploaded_context_files.get(selected_app_for_review, [])
+                            if app_context_files:
+                                for f in app_context_files:
+                                    st.caption(f"- `{f.name}`")
+                            else:
+                                st.caption("_No context files were uploaded for this application._")
+
+                        st.markdown("**Generated Test Cases:**")
+                        if st.session_state.generated_test_cases:
+                            st.markdown("---")
+                            ui_components.display_test_cases_for_app(st.session_state.generated_test_cases, selected_app_for_review)
+                        else:
+                            st.caption("_No test cases generated for this application yet._")
+
+                        # --- Start AI Review Button ---
+                        if st.button(f"🚀 Start AI Review for `{selected_app_for_review}`", key="start_ai_review_btn", type="primary", disabled=st.session_state.ai_review_inprogress_flag):
+                            utils.log_message(f"AI Review button clicked for app: {selected_app_for_review}", "INFO")
+                            st.session_state.ai_review_inprogress_flag = True
+                            st.session_state.ai_review_results_raw = None # Clear previous results
+                            st.session_state.ai_review_suggestions_processed = None
+                            st.session_state.ai_review_user_decisions = {}
+
+
+                            creds_ok, creds_msg = llm_integration_core.check_credentials(
+                                st.session_state.llm_provider, st.session_state.api_credentials,
+                                st.session_state.openai_fallback_api_key, require_fallback_for_rag=False # RAG not strictly needed for review, but good to check
+                            )
+                            if not creds_ok:
+                                utils.log_message(f"AI Review failed: Credentials check failed - {creds_msg}", "ERROR")
+                                st.error(f"Cannot start AI Review: {creds_msg}")
+                                st.session_state.ai_review_inprogress_flag = False
+                            elif not st.session_state.get("model_name"):
+                                utils.log_message(f"AI Review failed: No model selected for {st.session_state.llm_provider}.", "ERROR")
+                                st.error(f"Cannot start AI Review: No model selected for {st.session_state.llm_provider}.")
+                                st.session_state.ai_review_inprogress_flag = False
+                            else:
+                                llm, _ = llm_integration_core.get_llm_and_embeddings( # We only need LLM for this
+                                    st.session_state.llm_provider, st.session_state.model_name,
+                                    st.session_state.api_credentials, st.session_state.openai_fallback_api_key
+                                )
+                                if llm:
+                                    # Prepare context string
+                                    additional_context_str = ""
+                                    app_context_files_to_process = st.session_state.uploaded_context_files.get(selected_app_for_review, [])
+                                    if app_context_files_to_process:
+                                        for uploaded_file in app_context_files_to_process:
+                                            try:
+                                                extracted_content = file_processing.extract_text_from_file(uploaded_file)
+                                                if extracted_content:
+                                                    additional_context_str += f"\n\n--- Context from {uploaded_file.name} ---\n{extracted_content}\n--- End Context ---\n"
+                                            except Exception as e:
+                                                utils.log_message(f"Error processing context file {uploaded_file.name} for AI review: {e}", "WARNING")
+                                                st.warning(f"Could not fully process context file: {uploaded_file.name}")
+
+                                    current_tcs = st.session_state.generated_test_cases.get(selected_app_for_review, [])
+
+                                    with st.spinner(f"AI is reviewing test cases for `{selected_app_for_review}`... This may take a moment."):
+                                        review_output = llm_integration_core.perform_ai_test_case_review(
+                                            main_requirements_text=st.session_state.extracted_text,
+                                            additional_context_str=additional_context_str,
+                                            existing_test_cases=current_tcs,
+                                            llm=llm,
+                                            provider_name=st.session_state.llm_provider
+                                        )
+                                    st.session_state.ai_review_results_raw = review_output
+                                    st.session_state.ai_review_inprogress_flag = False
+
+                                    if review_output:
+                                        utils.log_message("AI Review completed. Raw output received.", "INFO")
+                                        st.session_state.ai_review_results_raw = review_output
+                                        # Process raw results into a more structured format for UI
+                                        # For now, this is a direct assignment, assuming LLM returns the expected structure.
+                                        # More complex processing can be added here if needed.
+                                        processed_suggestions = {
+                                            "coverage_summary": review_output.get("coverage_summary", "Not provided."),
+                                            "newly_suggested_test_cases": review_output.get("newly_suggested_test_cases", []),
+                                            "modified_test_cases_suggestions": review_output.get("modified_test_cases_suggestions", []),
+                                            "identified_duplicates": review_output.get("identified_duplicates", [])
+                                        }
+                                        st.session_state.ai_review_suggestions_processed = processed_suggestions
+                                        utils.log_message(f"Processed AI review suggestions: {st.session_state.ai_review_suggestions_processed}", "DEBUG")
+
+                                    else:
+                                        utils.log_message("AI Review returned no output or failed.", "ERROR")
+                                        st.error("AI Review process did not return any results. Check logs.")
+                                        st.session_state.ai_review_results_raw = None # Ensure it's cleared on failure
+                                        st.session_state.ai_review_suggestions_processed = None
+                                    st.session_state.ai_review_inprogress_flag = False
+                                    st.rerun()
+                                else:
+                                    utils.log_message("AI Review failed: LLM could not be initialized.", "ERROR")
+                                    st.error("AI Review failed: LLM could not be initialized. Check logs.")
+                                    st.session_state.ai_review_inprogress_flag = False
+
+                        # --- Display AI Review Results and Handle User Decisions ---
+                        if st.session_state.ai_review_suggestions_processed and selected_app_for_review:
+                            st.markdown("---")
+                            st.subheader("AI Review Analysis & Suggestions")
+
+                            # Display Coverage Summary
+                            ui_components.render_ai_review_summary_display(
+                                st.session_state.ai_review_suggestions_processed.get('coverage_summary')
+                            )
+
+                            # Display Suggestions (currently placeholder rendering)
+                            # This will be expanded to include interactive elements
+                            ui_components.render_ai_suggestions(
+                                st.session_state.ai_review_suggestions_processed,
+                                selected_app_for_review
+                            )
+
+                            # Render Apply Changes Button
+                            ui_components.render_apply_ai_review_changes_button(selected_app_for_review)
+
+            # --- Logic to Apply AI Review Changes (triggered by button in ui_components) ---
+            if 'trigger_apply_ai_changes' in st.session_state and st.session_state.trigger_apply_ai_changes:
+                app_to_update = st.session_state.trigger_apply_ai_changes
+                utils.log_message(f"Attempting to apply AI review changes for app: {app_to_update}", "INFO")
+
+                changes_applied_count = 0
+                if app_to_update in st.session_state.generated_test_cases and \
+                   st.session_state.ai_review_suggestions_processed and \
+                   st.session_state.ai_review_user_decisions:
+
+                    current_tcs_for_app = st.session_state.generated_test_cases[app_to_update]
+                    if not isinstance(current_tcs_for_app, list): # Ensure it's a list
+                        current_tcs_for_app = []
+                        st.session_state.generated_test_cases[app_to_update] = current_tcs_for_app
+
+
+                    # Determine the next available Test Case ID suffix
+                    max_id_num = 0
+                    for tc in current_tcs_for_app:
+                        if isinstance(tc, dict) and "Test Case ID" in tc:
+                            match = re.search(r'_(\d+)$', tc["Test Case ID"])
+                            if match:
+                                max_id_num = max(max_id_num, int(match.group(1)))
+                    next_id_counter = max_id_num + 1
+
+                    # Process accepted new test cases
+                    new_suggestions = st.session_state.ai_review_suggestions_processed.get("newly_suggested_test_cases", [])
+                    for i, suggested_tc_data in enumerate(new_suggestions):
+                        suggestion_id = f"new_{app_to_update}_{i}"
+                        if st.session_state.ai_review_user_decisions.get(suggestion_id) == "accept":
+                            new_tc_to_add = dict(suggested_tc_data) # Make a copy
+                            
+                            # Assign a new unique Test Case ID
+                            new_tc_to_add["Test Case ID"] = f"{app_to_update}_TC_{next_id_counter}"
+                            next_id_counter += 1
+                            
+                            current_tcs_for_app.append(new_tc_to_add)
+                            changes_applied_count += 1
+                            utils.log_message(f"Applied new TC: {new_tc_to_add['Test Case ID']}", "INFO")
+                    
+                    new_tcs_applied_count = changes_applied_count # Store count of new TCs before processing modifications
+                    modifications_applied_count = 0
+
+                    # Process accepted modified test cases
+                    modified_suggestions = st.session_state.ai_review_suggestions_processed.get("modified_test_cases_suggestions", [])
+                    if modified_suggestions:
+                        for mod_suggestion_details in modified_suggestions:
+                            original_tc_id_to_modify = mod_suggestion_details.get("original_test_case_id")
+                            suggestion_key = f"mod_{app_to_update}_{original_tc_id_to_modify}"
+
+                            if st.session_state.ai_review_user_decisions.get(suggestion_key) == "accept":
+                                suggested_data = mod_suggestion_details.get("suggested_test_case_data")
+                                if not suggested_data or not isinstance(suggested_data, dict):
+                                    utils.log_message(f"Skipping modification for TC ID '{original_tc_id_to_modify}': Suggested data is invalid.", "WARNING")
+                                    continue
+
+                                found_and_modified = False
+                                for i, existing_tc in enumerate(current_tcs_for_app):
+                                    if isinstance(existing_tc, dict) and existing_tc.get("Test Case ID") == original_tc_id_to_modify:
+                                        # Ensure the Test Case ID from the original is preserved, even if AI changed it in suggested_data
+                                        final_modified_data = dict(suggested_data)
+                                        final_modified_data["Test Case ID"] = original_tc_id_to_modify
+                                        
+                                        current_tcs_for_app[i] = final_modified_data
+                                        modifications_applied_count += 1
+                                        found_and_modified = True
+                                        utils.log_message(f"Applied modification for TC ID: {original_tc_id_to_modify}", "INFO")
+                                        break
+                                if not found_and_modified:
+                                    utils.log_message(f"Could not find original TC ID '{original_tc_id_to_modify}' to apply modification.", "WARNING")
+                    
+                    changes_applied_count += modifications_applied_count # This variable now tracks total changes
+                    duplicates_removed_count = 0
+
+                    # Process accepted duplicate resolutions
+                    duplicate_suggestions_groups = st.session_state.ai_review_suggestions_processed.get("identified_duplicates", [])
+                    if duplicate_suggestions_groups:
+                        tc_ids_to_remove_overall = set()
+                        for dup_group_details in duplicate_suggestions_groups:
+                            group_id = dup_group_details.get("duplicate_group_id")
+                            tc_ids_in_group = dup_group_details.get("test_case_ids", [])
+                            
+                            if not group_id or not tc_ids_in_group:
+                                continue
+
+                            decision_key = f"dup_{app_to_update}_{group_id}"
+                            tc_id_to_keep = st.session_state.ai_review_user_decisions.get(decision_key)
+
+                            if tc_id_to_keep and tc_id_to_keep != "Resolve Later / No Action":
+                                # Add all IDs in the group to removal set, except the one to keep
+                                for tc_id_in_group_member in tc_ids_in_group:
+                                    if tc_id_in_group_member != tc_id_to_keep:
+                                        tc_ids_to_remove_overall.add(tc_id_in_group_member)
+                                utils.log_message(f"Duplicate group '{group_id}': Keeping TC ID '{tc_id_to_keep}', marking others for removal: {tc_ids_in_group - {tc_id_to_keep}}", "INFO")
+                        
+                        if tc_ids_to_remove_overall:
+                            original_len = len(current_tcs_for_app)
+                            current_tcs_for_app[:] = [tc for tc in current_tcs_for_app if tc.get("Test Case ID") not in tc_ids_to_remove_overall]
+                            duplicates_removed_count = original_len - len(current_tcs_for_app)
+                            if duplicates_removed_count > 0:
+                                 utils.log_message(f"Removed {duplicates_removed_count} duplicate test cases for app '{app_to_update}'.", "INFO")
+                    
+                    # Update overall changes_applied_count if you want to count removals as a change type,
+                    # or keep it separate. For user message, separate counts are clearer.
+
+                    summary_messages = []
+                    if new_tcs_applied_count > 0:
+                        summary_messages.append(f"{new_tcs_applied_count} new test case(s) added")
+                    if modifications_applied_count > 0:
+                        summary_messages.append(f"{modifications_applied_count} existing test case(s) modified")
+                    if duplicates_removed_count > 0:
+                        summary_messages.append(f"{duplicates_removed_count} duplicate test case(s) removed")
+                    
+                    if not summary_messages:
+                        st.info(f"No changes were accepted or applied for '{app_to_update}'.")
+                    else:
+                        st.success(f"For '{app_to_update}': {', '.join(summary_messages)}.")
+                else:
+                    st.warning(f"Could not apply changes for '{app_to_update}'. Necessary data not found in session state.")
+
+                # Clear AI review states after attempting to apply
+                st.session_state.ai_review_results_raw = None
+                st.session_state.ai_review_suggestions_processed = None
+                st.session_state.ai_review_user_decisions = {}
+                if 'trigger_apply_ai_changes' in st.session_state: # Check before deleting
+                    del st.session_state.trigger_apply_ai_changes # Consume the trigger
+                
+                st.rerun()
+
+
+        # === Manual Refactor Tab (Original Tab 2, now Tab 3) ===
+        with tab3: # Was tab2, now tab3
+            st.header("Manual Refactor Generated Test Cases")
 
             # --- Handle Refactoring Request ---
             # Check for single refactor request first

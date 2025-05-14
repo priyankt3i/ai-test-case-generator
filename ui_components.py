@@ -381,6 +381,89 @@ def display_results(test_cases_dict: Dict[str, Any]):
             else:
                 st.warning(f"No valid test cases or error message found for {app_name}.")
 
+def display_test_cases_for_app(test_cases_dict: Dict[str, Any], target_app_name: str):
+    """
+    Displays the summary metrics and detailed results for a specific application,
+    identified by target_app_name.
+    """
+    # Check if the main dictionary is empty
+    if not test_cases_dict:
+        st.warning("Test cases data is empty. Nothing to display.")
+        return
+
+    # Check if the target application exists in the dictionary
+    if target_app_name not in test_cases_dict:
+        st.warning(f"No data found for application: '{target_app_name}'. Cannot display results.")
+        return
+
+    # Get the results for the target application
+    cases_result = test_cases_dict.get(target_app_name)
+
+    st.write(f"**All Test Case Results for: {target_app_name}**")
+    
+    # Use a unique key based on app_name for the expander to avoid conflicts if this function
+    # were to be called multiple times on the same page for different apps (though current design is for one).
+    expander_key = f"expander_{sanitize_filename(target_app_name)}"
+
+    # Default to expanded=True since we are focusing on this one app's details
+    with st.expander(f"View Details for: {target_app_name}", expanded=True):
+        if isinstance(cases_result, list) and cases_result:
+            # This block handles the case where cases_result is a non-empty list.
+            if all(isinstance(item, dict) for item in cases_result):
+                # Successfully retrieved a list of test case dictionaries
+                st.write(f"Generated {len(cases_result)} test cases:")
+                try:
+                    df = pd.DataFrame(cases_result)
+                    display_cols_ordered = []
+                    
+                    # Create a mapping of lowercase column names to original column names
+                    # This helps in case-insensitive matching of EXCEL_EXPECTED_COLUMNS
+                    existing_cols_map = {col.lower(): col for col in df.columns}
+
+                    # Add expected columns first, in the specified order
+                    for expected_col in EXCEL_EXPECTED_COLUMNS:
+                        actual_col_name = existing_cols_map.get(expected_col.lower())
+                        if actual_col_name:
+                            display_cols_ordered.append(actual_col_name)
+                            # Remove from map to avoid re-adding it later
+                            del existing_cols_map[expected_col.lower()] 
+                        else:
+                            # If an expected column is missing from the data, add it with NA values
+                            df[expected_col] = pd.NA 
+                            display_cols_ordered.append(expected_col)
+                    
+                    # Add any other columns from the DataFrame that were not in EXCEL_EXPECTED_COLUMNS
+                    # These are the remaining columns from existing_cols_map (values are original column names)
+                    other_cols_present = list(existing_cols_map.values())
+                    final_display_order = display_cols_ordered + other_cols_present
+                    
+                    # Display the DataFrame with the reordered columns
+                    df_display = df[final_display_order]
+                    st.dataframe(df_display, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Could not display results for '{target_app_name}' as a table: {e}")
+                    st.write("Raw data:")
+                    st.json(cases_result) # Fallback to JSON view if DataFrame conversion fails
+            else:
+                # Data is a list but contains items that are not dictionaries
+                st.warning(f"Data for '{target_app_name}' is a list but contains non-dictionary items.")
+                st.write("Raw data:")
+                st.json(cases_result) # Show raw list
+        elif isinstance(cases_result, str):
+            # Handle cases where cases_result is a string (e.g., an error message or a status update)
+            if "error" in cases_result.lower(): # General check for "error" in the string
+                st.error(f"Error recorded for {target_app_name}: {cases_result}")
+            else:
+                st.info(f"Status for {target_app_name}: {cases_result}") # e.g., "No applicable scenarios found"
+        elif cases_result is None or (isinstance(cases_result, list) and not cases_result): 
+            # Handles None or empty list explicitly, indicating no test cases
+            st.info(f"No test cases were generated or are available for {target_app_name}.")
+        else:
+            # Catch-all for other unexpected data types for cases_result
+            st.warning(f"Data for '{target_app_name}' is in an unexpected format (Type: {type(cases_result).__name__}).")
+            st.write("Raw data:")
+            st.json(cases_result) # Display the raw data if its format is not recognized
+
 # --- Refactoring UI ---
 
 def render_modification_confirmation_ui():
@@ -398,7 +481,7 @@ def render_modification_confirmation_ui():
             st.subheader("Proposed Refactored Test Cases:")
             try:
                 df = pd.DataFrame(refactored_data)
-                # Attempt to display in a structured way (similar to display_results)
+                # Attempt to display in a structured way 
                 display_cols_present = []
                 other_cols_present = []
                 existing_cols_lower = {col.lower(): col for col in df.columns}
@@ -562,3 +645,219 @@ def render_modification_request_ui():
 
     if button_disabled: # Updated caption logic
         st.caption("Please select an application and enter refactoring instructions.")
+
+# --- NEW UI Components for AI Review Tab ---
+
+def display_test_cases_summary(test_cases: List[Dict], max_display: int = 5):
+    """Displays a compact summary of test cases, e.g., for the AI Review input section."""
+    if not test_cases:
+        st.caption("_No test cases to display._")
+        return
+
+    st.caption(f"Showing first {min(len(test_cases), max_display)} of {len(test_cases)} test cases:")
+    for i, tc in enumerate(test_cases):
+        if i >= max_display:
+            break
+        tc_id = tc.get("Test Case ID", f"Unknown ID {i+1}")
+        tc_name = tc.get("Test Case Name", "Unnamed Test Case")
+        st.markdown(f"- **{tc_id}:** {tc_name}")
+
+def render_ai_review_summary_display(summary_text: Optional[str]):
+    """Displays the AI's coverage summary."""
+    st.subheader("AI Coverage Summary")
+    if summary_text:
+        st.markdown(summary_text)
+    else:
+        st.info("Coverage summary not provided by AI or not yet available.")
+
+def render_ai_suggestions(
+    suggestions_processed: Optional[Dict[str, List[Dict]]],
+    app_name: str
+):
+    """
+    Renders the processed AI suggestions for new test cases, modifications, and duplicates.
+    This is a placeholder and will need to be broken down into more specific rendering functions
+    and integrate with st.session_state.ai_review_user_decisions.
+    """
+    if not suggestions_processed:
+        st.info("No AI suggestions processed or available yet.")
+        return
+
+    # Placeholder: Displaying raw processed suggestions for now
+    # In a full implementation, each section (new, modified, duplicates) would have
+    # its own rendering logic with interactive elements (checkboxes, buttons)
+    # to update st.session_state.ai_review_user_decisions.
+
+    new_suggestions = suggestions_processed.get("newly_suggested_test_cases", [])
+    modified_suggestions = suggestions_processed.get("modified_test_cases_suggestions", [])
+    duplicate_suggestions = suggestions_processed.get("identified_duplicates", [])
+
+    if not new_suggestions and not modified_suggestions and not duplicate_suggestions:
+        st.info("AI analysis complete, but no specific suggestions were provided in the expected format.")
+        return
+
+    # Initialize user decisions if not present
+    if 'ai_review_user_decisions' not in st.session_state:
+        st.session_state.ai_review_user_decisions = {}
+
+    # --- Render New Test Case Suggestions ---
+    if new_suggestions:
+        st.subheader(f"New Test Case Suggestions ({len(new_suggestions)})")
+        for i, new_tc in enumerate(new_suggestions):
+            suggestion_id = f"new_{app_name}_{i}"
+            with st.expander(f"New Suggestion {i+1}: {new_tc.get('Test Case Name', 'Unnamed New TC')}", expanded=False):
+                st.dataframe(pd.DataFrame([new_tc])) # Display TC details in a table
+
+                # Ensure EXCEL_EXPECTED_COLUMNS is available
+                cols_to_check = config.EXCEL_EXPECTED_COLUMNS if hasattr(config, 'EXCEL_EXPECTED_COLUMNS') else list(new_tc.keys())
+                missing_fields = [field for field in cols_to_check if field not in new_tc or not new_tc.get(field)]
+                if missing_fields:
+                    st.warning(f"AI Suggestion Missing Fields: {', '.join(missing_fields)}")
+
+
+                decision = st.radio(
+                    "Accept this new test case?",
+                    options=["No Decision", "Accept", "Reject"],
+                    key=f"decision_{suggestion_id}",
+                    horizontal=True,
+                    index=0 # Default to "No Decision"
+                )
+                if decision != "No Decision":
+                    st.session_state.ai_review_user_decisions[suggestion_id] = decision.lower()
+                elif suggestion_id in st.session_state.ai_review_user_decisions and decision == "No Decision":
+                    # Allow user to revert to "No Decision"
+                    del st.session_state.ai_review_user_decisions[suggestion_id]
+
+        log_message(f"UI: Displaying {len(new_suggestions)} new TC suggestions for app '{app_name}'.", "DEBUG")
+
+    # --- Render Modified Test Case Suggestions ---
+    if modified_suggestions:
+        st.subheader(f"Suggestions for Modifying Existing Test Cases ({len(modified_suggestions)})")
+        for i, mod_suggestion in enumerate(modified_suggestions):
+            original_tc_id = mod_suggestion.get("original_test_case_id")
+            reason = mod_suggestion.get("modification_reason", "No reason provided.")
+            suggested_tc_data = mod_suggestion.get("suggested_test_case_data")
+
+            if not original_tc_id or not suggested_tc_data:
+                st.warning(f"Skipping modification suggestion {i+1} due to missing original ID or suggested data.")
+                continue
+
+            suggestion_id_key = f"mod_{app_name}_{original_tc_id}"
+            
+            # Find the original test case
+            original_tc = None
+            if app_name in st.session_state.get('generated_test_cases', {}) and \
+               isinstance(st.session_state.generated_test_cases[app_name], list):
+                for tc in st.session_state.generated_test_cases[app_name]:
+                    if isinstance(tc, dict) and tc.get("Test Case ID") == original_tc_id:
+                        original_tc = tc
+                        break
+            
+            with st.expander(f"Modification for TC ID '{original_tc_id}': {suggested_tc_data.get('Test Case Name', 'N/A')}", expanded=False):
+                st.markdown(f"**Reason for Suggestion:** {reason}")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Original Test Case:**")
+                    if original_tc:
+                        st.json(original_tc, expanded=False)
+                    else:
+                        st.warning(f"Could not find original test case with ID: {original_tc_id}")
+                
+                with col2:
+                    st.markdown("**AI's Suggested Version:**")
+                    st.json(suggested_tc_data, expanded=False)
+                    # Check for missing fields in AI suggestion
+                    cols_to_check = config.EXCEL_EXPECTED_COLUMNS if hasattr(config, 'EXCEL_EXPECTED_COLUMNS') else list(suggested_tc_data.keys())
+                    missing_fields_suggested = [field for field in cols_to_check if field not in suggested_tc_data or not suggested_tc_data.get(field)]
+                    if missing_fields_suggested:
+                        st.warning(f"AI's Suggested Version Missing Fields: {', '.join(missing_fields_suggested)}")
+
+
+                current_decision = st.session_state.ai_review_user_decisions.get(suggestion_id_key, "No Decision")
+                options = ["No Decision", "Accept", "Reject"]
+                try:
+                    current_index = options.index(current_decision.title()) # Ensure title case for matching
+                except ValueError:
+                    current_index = 0 # Default to "No Decision"
+
+                decision = st.radio(
+                    "Your decision for this modification:",
+                    options=options,
+                    key=f"decision_{suggestion_id_key}",
+                    horizontal=True,
+                    index=current_index
+                )
+                if decision != "No Decision":
+                    st.session_state.ai_review_user_decisions[suggestion_id_key] = decision.lower()
+                elif suggestion_id_key in st.session_state.ai_review_user_decisions and decision == "No Decision":
+                     del st.session_state.ai_review_user_decisions[suggestion_id_key]
+        log_message(f"UI: Displaying {len(modified_suggestions)} modification suggestions for app '{app_name}'.", "DEBUG")
+
+    # --- Render Identified Duplicate Test Cases ---
+    if duplicate_suggestions:
+        st.subheader(f"Identified Duplicate Test Cases ({len(duplicate_suggestions)} group(s))")
+        for i, dup_group in enumerate(duplicate_suggestions):
+            group_id = dup_group.get("duplicate_group_id", f"group_{i}")
+            tc_ids_in_group = dup_group.get("test_case_ids", [])
+            reason = dup_group.get("reason", "No reason provided.")
+
+            if not tc_ids_in_group:
+                st.warning(f"Skipping duplicate group {group_id} as it contains no test case IDs.")
+                continue
+
+            suggestion_id_key = f"dup_{app_name}_{group_id}"
+            
+            with st.expander(f"Duplicate Group '{group_id}': ({len(tc_ids_in_group)} TCs)", expanded=False):
+                st.markdown(f"**Reason for flagging as duplicates:** {reason}")
+                st.markdown("**Test Cases in this group:**")
+
+                radio_options = ["Resolve Later / No Action"]
+                radio_captions = ["Do nothing for this group now."]
+                
+                original_tcs_in_app = st.session_state.get('generated_test_cases', {}).get(app_name, [])
+
+                for tc_id in tc_ids_in_group:
+                    tc_summary = tc_id # Default to ID if not found
+                    for tc_data in original_tcs_in_app:
+                        if isinstance(tc_data, dict) and tc_data.get("Test Case ID") == tc_id:
+                            tc_summary = f"{tc_id} - {tc_data.get('Test Case Name', 'Unnamed TC')}"
+                            break
+                    radio_options.append(tc_id)
+                    radio_captions.append(f"Keep this Test Case: {tc_summary}")
+
+                current_decision_for_group = st.session_state.ai_review_user_decisions.get(suggestion_id_key, "Resolve Later / No Action")
+                
+                try:
+                    # Find index of current decision. If current_decision is a TC ID, it will be in radio_options.
+                    current_index = radio_options.index(current_decision_for_group)
+                except ValueError:
+                    current_index = 0 # Default to "Resolve Later / No Action"
+
+                chosen_tc_to_keep = st.radio(
+                    "Which Test Case to keep from this group? (Others will be marked for removal)",
+                    options=radio_options,
+                    captions=radio_captions,
+                    key=f"decision_{suggestion_id_key}",
+                    index=current_index
+                )
+
+                if chosen_tc_to_keep != "Resolve Later / No Action":
+                    st.session_state.ai_review_user_decisions[suggestion_id_key] = chosen_tc_to_keep # Store the ID of the TC to keep
+                elif suggestion_id_key in st.session_state.ai_review_user_decisions and chosen_tc_to_keep == "Resolve Later / No Action":
+                    del st.session_state.ai_review_user_decisions[suggestion_id_key]
+        log_message(f"UI: Displaying {len(duplicate_suggestions)} duplicate groups for app '{app_name}'.", "DEBUG")
+
+
+def render_apply_ai_review_changes_button(app_name: str):
+    """
+    Renders the button to apply accepted AI review changes.
+    The actual logic for applying changes will reside in main_app.py.
+    """
+    # This key needs to be unique and handled in main_app.py
+    if st.button(f"✅ Apply Accepted AI Changes for `{app_name}`", key=f"apply_ai_changes_{app_name}_btn", type="primary"):
+        # Set a flag or trigger in session state that main_app.py can react to
+        st.session_state.trigger_apply_ai_changes = app_name
+        # No direct action here; main_app.py will handle it and rerun.
+        log_message(f"UI: 'Apply AI Changes' button clicked for app '{app_name}'. Flag set.", "INFO")
+        st.rerun() # Rerun to allow main_app.py to process the flag

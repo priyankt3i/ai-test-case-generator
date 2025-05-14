@@ -438,15 +438,13 @@ def generate_test_cases(
     # --- Vector Store Creation ---
     vectorstore = None
     try:
-        # Placeholder: Replace with your actual vector store creation logic
-        # Ensure this part is correctly implemented in your version
+        log_message("Creating vector store from text...", "DEBUG")
         from langchain.text_splitter import RecursiveCharacterTextSplitter # Example import
         from langchain_community.vectorstores import FAISS # Example import
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP) # Use config values
         splits = text_splitter.split_text(text)
         if not splits: raise ValueError("Text splitting resulted in zero chunks.")
         vectorstore = FAISS.from_texts(texts=splits, embedding=embeddings)
-        # End Placeholder
         if vectorstore is None: raise ValueError("Vector store creation failed (remained None).")
         log_message("--- Vector Store Creation Succeeded ---", "INFO")
     except Exception as e:
@@ -473,7 +471,7 @@ def generate_test_cases(
         if not isinstance(EXCEL_EXPECTED_COLUMNS, list) or not EXCEL_EXPECTED_COLUMNS:
              raise ValueError("EXCEL_EXPECTED_COLUMNS not defined correctly in config.")
         tc_fields = ", ".join([f"`{col}`" for col in EXCEL_EXPECTED_COLUMNS])
-        formatted_prompt_str = prompt_template_str.format(field_names=tc_fields, context="{context}", input="{input}") # Ensure placeholders match
+        formatted_prompt_str = prompt_template_str.format(field_names=tc_fields, context="{context}", input="{input}") 
         test_case_prompt = ChatPromptTemplate.from_template(formatted_prompt_str)
         document_chain = create_stuff_documents_chain(llm, test_case_prompt)
         retrieval_chain = create_retrieval_chain(retriever, document_chain)
@@ -798,4 +796,119 @@ def refactor_all_test_cases(
         # *** REMOVED exc_info=True ***
         log_message(f"Exception during bulk refactoring process for app '{app_name}': {type(e).__name__} - {e}", "ERROR")
         st.error(f"An unexpected error occurred during the bulk refactoring process for app '{app_name}': {e}")
+        return None
+
+# --- NEW: perform_ai_test_case_review Function ---
+def perform_ai_test_case_review(
+    main_requirements_text: str,
+    additional_context_str: str,
+    existing_test_cases: List[Dict],
+    llm: BaseChatModel,
+    provider_name: str
+) -> Optional[Dict]:
+    """
+    Uses the LLM to review a list of existing test cases against requirements and context.
+    The LLM is expected to return a JSON object detailing coverage, new suggestions,
+    modifications, and duplicates.
+    """
+    log_message(f"Starting AI test case review using provider: {provider_name}...", "INFO")
+
+    if not llm:
+        st.error("Cannot perform AI review: LLM is not initialized.")
+        log_message("AI review failed: LLM not initialized.", "ERROR")
+        return None
+    if not main_requirements_text or not main_requirements_text.strip():
+        st.error("Cannot perform AI review: Main requirements text is empty.")
+        log_message("AI review failed: Main requirements text is empty.", "ERROR")
+        return None
+    # additional_context_str can be empty, so no check for that.
+    if not isinstance(existing_test_cases, list): # Could be empty list, that's fine
+        st.error("Cannot perform AI review: Existing test cases data is not a list.")
+        log_message(f"AI review failed: existing_test_cases is not a list. Type: {type(existing_test_cases)}", "ERROR")
+        return None
+
+    try:
+        # Prepare inputs for the prompt
+        try:
+            existing_test_cases_json_str = json.dumps(existing_test_cases, separators=(',', ':'))
+        except TypeError as te:
+            log_message(f"AI review failed: Could not serialize existing test cases to JSON: {te}", "ERROR")
+            st.error(f"Error preparing existing test cases for AI review: Could not convert data to JSON. {te}")
+            return None
+
+        if not isinstance(EXCEL_EXPECTED_COLUMNS, list) or not EXCEL_EXPECTED_COLUMNS:
+            log_message("AI review failed: EXCEL_EXPECTED_COLUMNS not defined correctly in config.", "ERROR")
+            st.error("Configuration Error: EXCEL_EXPECTED_COLUMNS is missing or invalid.")
+            return None
+        field_names_str = ", ".join([f"`{col}`" for col in EXCEL_EXPECTED_COLUMNS])
+
+        template_key = "AI_REVIEW_TC" # Matches the new template in config.py
+        prompt_template_str = get_prompt_template(provider_name, template_key)
+        if prompt_template_str.startswith("Error:"): # Check if template fetching failed
+             st.error(prompt_template_str)
+             log_message(f"AI review failed: Prompt template '{template_key}' could not be loaded.", "ERROR")
+             return None
+
+        # Format the prompt template string
+        # The new prompt has placeholders: {field_names}, {{main_requirements}}, {{additional_context}}, {{existing_test_cases_json}}
+        # We need to ensure these are correctly substituted.
+        # Langchain's ChatPromptTemplate.from_template handles {{...}} style placeholders.
+        # We manually insert field_names as it's part of the fixed structure description within the prompt.
+        formatted_prompt_str = prompt_template_str.format(field_names=field_names_str)
+        prompt = ChatPromptTemplate.from_template(formatted_prompt_str)
+
+        log_message(f"Using prompt for AI test case review:\n{formatted_prompt_str[:500]}...", "DEBUG") # Log beginning of prompt
+        chain = prompt | llm | StrOutputParser()
+        log_message("AI review chain created.", "DEBUG")
+
+        with st.spinner(f"Asking LLM ({provider_name}) to review test cases..."):
+            log_message("Invoking AI review chain...", "DEBUG")
+            response_str = chain.invoke({
+                "main_requirements": main_requirements_text,
+                "additional_context": additional_context_str,
+                "existing_test_cases_json": existing_test_cases_json_str
+            })
+            log_message("AI review chain invocation complete.", "DEBUG")
+            log_message(f"Raw LLM output for AI review:\n---\n{response_str}\n---", "DEBUG")
+
+        if not response_str or not response_str.strip():
+            log_message("LLM returned empty response for AI review.", "WARNING")
+            st.warning("LLM returned an empty response for the AI review. No analysis available.")
+            return None
+
+        log_message(f"Attempting to parse AI review response as JSON object: '{response_str[:200]}...'", "DEBUG")
+        # The AI_REVIEW_TC_PROMPT_TEMPLATE asks for a single JSON object.
+        # _extract_list_from_llm_output is for lists, so we use parse_json_output directly.
+        review_results_dict = parse_json_output(response_str, expected_type=dict)
+
+        if review_results_dict is None:
+            log_message("AI review failed: Failed to parse JSON object response from LLM.", "ERROR")
+            st.error("AI review failed: LLM response was not a valid JSON object as expected.")
+            return None
+
+        if not isinstance(review_results_dict, dict):
+             log_message(f"AI review failed: Parsed result is not a dictionary (Type: {type(review_results_dict)}).", "ERROR")
+             st.error("AI review failed: Unexpected result format after parsing.")
+             return None
+
+        # Basic validation of expected top-level keys (can be expanded)
+        expected_top_keys = ["coverage_summary", "newly_suggested_test_cases", "modified_test_cases_suggestions", "identified_duplicates"]
+        for key in expected_top_keys:
+            if key not in review_results_dict:
+                log_message(f"AI review warning: Expected key '{key}' not found in LLM response.", "WARNING")
+                st.warning(f"AI review result is missing the expected section: '{key}'. The output might be incomplete.")
+                # Initialize missing keys as empty lists or strings to prevent downstream errors
+                if key.endswith("_summary"):
+                    review_results_dict[key] = "Summary not provided by AI."
+                else:
+                    review_results_dict[key] = []
+
+
+        log_message("AI review successful. Parsed LLM response.", "INFO")
+        st.success("AI Test Case Review complete.")
+        return review_results_dict
+
+    except Exception as e:
+        log_message(f"Exception during AI test case review process: {type(e).__name__} - {e}", "ERROR")
+        st.error(f"An unexpected error occurred during the AI test case review process: {e}")
         return None

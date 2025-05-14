@@ -88,6 +88,56 @@ User Modification Instructions (Apply to ALL test cases):
 Updated Test Case List (JSON Array Only):
 """
 
+# --- NEW: AI Review Test Cases Prompt ---
+AI_REVIEW_TC_PROMPT_TEMPLATE = """You are an expert QA Lead tasked with reviewing a set of test cases against business requirements and supplementary context.
+Your goal is to identify coverage gaps, suggest improvements to existing test cases, recommend new test cases, and flag duplicates.
+
+**Inputs Provided to You:**
+1.  `main_requirements`: The primary business requirements document text.
+2.  `additional_context`: Concatenated text from all supplementary context documents.
+3.  `existing_test_cases`: A JSON list of current test cases. Each test case object has the following fields: {field_names}.
+
+**Your Task:**
+Analyze the `existing_test_cases` in light of the `main_requirements` and `additional_context`.
+Return a *single JSON object* with the following top-level keys:
+-   `coverage_summary`: (String) A brief summary of how well the existing test cases cover the requirements.
+-   `newly_suggested_test_cases`: (JSON List of Objects) A list of new test case objects you recommend. Each object *must* conform to the fields: {field_names}. If no new test cases are needed, provide an empty list [].
+-   `modified_test_cases_suggestions`: (JSON List of Objects) A list of suggestions for modifying existing test cases. Each object in this list *must* have:
+    -   `original_test_case_id`: (String) The 'Test Case ID' of the test case to be modified.
+    -   `modification_reason`: (String) A brief explanation of why the modification is suggested.
+    -   `suggested_test_case_data`: (JSON Object) The complete test case data for the *modified* version, including all fields: {field_names}.
+    If no modifications are needed, provide an empty list [].
+-   `identified_duplicates`: (JSON List of Objects) A list of objects, where each object represents a group of duplicate or highly redundant test cases. Each object *must* have:
+    -   `duplicate_group_id`: (String) A unique identifier for this group of duplicates (e.g., "DUP_GROUP_1").
+    -   `test_case_ids`: (JSON List of Strings) A list of 'Test Case ID's that are considered duplicates of each other.
+    -   `reason`: (String) Why these are considered duplicates.
+    If no duplicates are found, provide an empty list [].
+
+**Important Formatting Rules:**
+-   The entire output *must* be a single valid JSON object.
+-   All test case objects (new or suggested modifications) *must* include all the fields: {field_names}.
+-   Ensure all string values within the JSON are properly escaped.
+-   Do not include any text, explanations, or apologies outside of the main JSON object.
+
+**Inputs:**
+
+Main Requirements (`main_requirements`):
+```text
+{{main_requirements}}
+```
+
+Additional Context (`additional_context`):
+```text
+{{additional_context}}
+```
+
+Existing Test Cases (`existing_test_cases` - JSON list):
+```json
+{{existing_test_cases_json}}
+```
+
+**Your JSON Output Only:**
+"""
 
 # --- LLM Provider Configuration ---
 LLM_PROVIDER_CONFIG = {
