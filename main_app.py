@@ -6,8 +6,8 @@ import streamlit as st
 import os
 import re # Import regex module
 # import json # No longer needed for this clipboard method
+from PIL import Image
 
-# *** Import streamlit-clipboard ***
 try:
     # Use the specific component name as imported in your original code
     from clipboard_component import copy_component
@@ -125,6 +125,12 @@ init_session_state()
 
 # --- Sidebar ---
 with st.sidebar:
+    try:
+        logo = Image.open("public/logo.png") # Replace with the actual path to your logo
+        st.sidebar.image(logo, width=700) # Adjust width as needed
+    except FileNotFoundError:
+        st.sidebar.error("Logo image not found. Please check the path.")
+
     st.header("📄 Upload Document")
     uploaded_file = st.file_uploader(
         "Upload Requirements (.docx)",
@@ -151,6 +157,7 @@ with st.sidebar:
 
 # --- Main Content Area ---
 st.title(config.APP_TITLE)
+st.header("Convert Business Requirements to Test Cases")
 st.markdown("Upload requirements, configure LLM, identify applications, generate test cases, refactor, and view logs.")
 
 # --- File Processing Logic ---

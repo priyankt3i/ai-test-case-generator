@@ -1,4 +1,4 @@
-# 📄 Business Requirements to Test Cases Generator 🧪
+# 📄 Convert Business Requirements to Test Cases 🧪
 
 ## Overview
 

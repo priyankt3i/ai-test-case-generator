@@ -3,7 +3,7 @@
 import os
 
 # --- Application Settings ---
-APP_TITLE = "📄 Business Requirements to Test Cases Generator 🧪"
+APP_TITLE = "📄 TestGen AI 🧪"
 PAGE_LAYOUT = "wide"
 ACCEPTED_FILE_TYPES = ["docx"]
 APP_CONTEXT_FOLDER_NAME = "app_context" # Folder name relative to script execution dir
