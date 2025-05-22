@@ -110,8 +110,10 @@ class DocumentPreprocessor:
                         core_content = effective_line[1:-1]
                         segments_on_this_line = core_content.split('","')
                     else: segments_on_this_line = [line] 
-                elif line.startswith(',"') and line.endswith('"'): segments_on_this_line = [line[2:-1]]
-                elif line.startswith('"') and line.endswith('"'): segments_on_this_line = [line[1:-1]]
+                elif line.startswith(',"') and line.endswith('"'): 
+                    segments_on_this_line = [line[2:-1]]
+                elif line.startswith('"') and line.endswith('"'): 
+                    segments_on_this_line = [line[1:-1]]
                 else: segments_on_this_line = [line]
                 for seg in segments_on_this_line:
                     seg_stripped = seg.strip()
@@ -124,7 +126,8 @@ class DocumentPreprocessor:
         if re.match(r"^\d+(\.\d+)*\s+[A-Z0-9].*?(?:\s*\(NOT IN SCOPE\))?$", line_text, re.IGNORECASE):
             if not re.match(r"^\d+(\.\d+)\s+(FR\. No\.|Description|Requirement)", line_text, re.IGNORECASE):
                 parts = line_text.split(maxsplit=1) 
-                if len(parts) > 1 and parts[1] and parts[1][0].isupper(): return True
+                if len(parts) > 1 and parts[1] and parts[1][0].isupper(): 
+                    return True
         main_section_keywords = [
             "TABLE OF CONTENTS", "VERSION HISTORY", "OVERALL DESCRIPTION", "APPENDIX", 
             "STAKEHOLDER SIGN-OFF AND ACCEPTANCE", "REFERENCE", "LOG IN AND FORGOT PASSWORD", 
@@ -170,7 +173,8 @@ class DocumentPreprocessor:
                 metadata["current_section_title"] = current_section_hierarchy_titles[-1]
                 metadata["section_hierarchy_titles"] = list(current_section_hierarchy_titles[:-1]) if len(current_section_hierarchy_titles) > 1 else []
             else:
-                metadata["current_section_title"] = "Document Preamble"; metadata["section_hierarchy_titles"] = []
+                metadata["current_section_title"] = "Document Preamble"
+                metadata["section_hierarchy_titles"] = []
             if current_fr_number: metadata["fr_number"] = current_fr_number
             metadata["is_out_of_scope"] = current_section_is_out_of_scope
             self.chunks.append({"text": chunk_text, "metadata": metadata})
@@ -186,7 +190,8 @@ class DocumentPreprocessor:
             is_fr_item = self._is_fr_item_start(line_content) if is_processing_fr_table_content else False
             if is_new_major_section or is_fr_header or is_fr_item:
                 finalize_current_chunk()
-                if not is_fr_item: current_fr_number = None
+                if not is_fr_item: 
+                    current_fr_number = None
             if is_new_major_section:
                 is_processing_fr_table_content = False 
                 current_section_is_out_of_scope = "NOT IN SCOPE" in line_content.upper()
@@ -197,11 +202,16 @@ class DocumentPreprocessor:
                     title_part_cleaned = re.sub(r"\s*\(NOT IN SCOPE\).*$", "", title_part.strip(), flags=re.IGNORECASE).strip()
                     section_title_for_hierarchy = title_part_cleaned
                     depth = num_part.count('.') + 1
-                    if depth == 1: current_section_hierarchy_titles = [section_title_for_hierarchy]
-                    elif depth > len(current_section_hierarchy_titles): current_section_hierarchy_titles.append(section_title_for_hierarchy)
-                    else: current_section_hierarchy_titles = current_section_hierarchy_titles[:depth-1] + [section_title_for_hierarchy]
-                else: current_section_hierarchy_titles = [section_title_for_hierarchy]
-            if is_fr_header: is_processing_fr_table_content = True
+                    if depth == 1: 
+                        current_section_hierarchy_titles = [section_title_for_hierarchy]
+                    elif depth > len(current_section_hierarchy_titles): 
+                        current_section_hierarchy_titles.append(section_title_for_hierarchy)
+                    else: 
+                        current_section_hierarchy_titles = current_section_hierarchy_titles[:depth-1] + [section_title_for_hierarchy]
+                else: 
+                    current_section_hierarchy_titles = [section_title_for_hierarchy]
+            if is_fr_header: 
+                is_processing_fr_table_content = True
             if is_fr_item:
                 current_fr_number = line_content.split('","')[0].strip()
                 is_processing_fr_table_content = True 

@@ -43,7 +43,6 @@ except Exception as e: # Catch other potential errors during set_page_config
      st.error(f"Error setting page config: {e}")
 
 # --- Custom CSS Injection ---
-# (CSS remains the same - omitted for brevity but should be included in your actual file)
 st.markdown("""
 <style>
     /* Your CSS rules here */
@@ -78,7 +77,7 @@ def init_session_state():
     if 'current_file_identifier' not in st.session_state: st.session_state.current_file_identifier = None
 
     # *** MODIFIED/NEW State for Context Handling ***
-    # Remove or comment out old state if desired
+    # Remove or comment out old state
     # if 'context_file_selections' in st.session_state: del st.session_state['context_file_selections']
     # if 'available_context_files' in st.session_state: del st.session_state['available_context_files']
     # Add new state for uploaded context files (maps app_name to list of UploadedFile objects)
@@ -113,13 +112,12 @@ def init_session_state():
     # Initialize Log Messages List
     if 'log_messages' not in st.session_state: st.session_state.log_messages = []
 
-    # --- NEW: AI Review Test Cases State ---
+    # --- AI Review Test Cases State ---
     if 'ai_review_selected_app' not in st.session_state: st.session_state.ai_review_selected_app = None
     if 'ai_review_results_raw' not in st.session_state: st.session_state.ai_review_results_raw = None
     if 'ai_review_suggestions_processed' not in st.session_state: st.session_state.ai_review_suggestions_processed = None # Will store structured suggestions
     if 'ai_review_user_decisions' not in st.session_state: st.session_state.ai_review_user_decisions = {} # Maps suggestion_id to 'accept'/'reject'
     if 'ai_review_inprogress_flag' not in st.session_state: st.session_state.ai_review_inprogress_flag = False
-    # --- END NEW AI Review State ---
 
 init_session_state()
 
@@ -214,8 +212,6 @@ if current_file:
             if extracted is not None: # Check for None explicitly
                 st.session_state.extracted_text = extracted
                 utils.log_message(f"Text extracted successfully ({len(extracted)} chars).", "INFO")
-                # Update available context files list (for sidebar info) if needed
-                # This might be removed if sidebar info is removed
                 try:
                     st.session_state.available_context_files = utils.get_available_context_files()
                 except Exception as e:
@@ -246,16 +242,14 @@ if current_file:
             st.subheader("2. Identify Applications")
             if st.button("Identify Applications", key="identify_btn"):
                 utils.log_message("'Identify Applications' button clicked.", "INFO")
-                # Reset downstream state
+
                 st.session_state.identified_applications = []
                 st.session_state.selected_applications = []
                 st.session_state.generated_test_cases = {}
-                # *** MODIFIED: Reset new context state ***
                 st.session_state.uploaded_context_files = {}
                 # Remove old state reset if desired
                 # st.session_state.context_file_selections = {}
-                # *** END MODIFICATION ***
-                # Reset modification states
+  
                 st.session_state.modification_app_name = None; st.session_state.modification_tc_id = None
                 st.session_state.proposed_modification_data = None; st.session_state.original_tc_data_for_diff = None
                 st.session_state.refactor_request = None
@@ -269,7 +263,7 @@ if current_file:
                 if not creds_ok:
                     utils.log_message(f"Identify failed: Credentials check failed - {creds_msg}", "WARNING")
                     st.warning(f"Cannot identify: {creds_msg}")
-                elif not st.session_state.get("model_name"): # Use .get for safety
+                elif not st.session_state.get("model_name"): 
                     utils.log_message(f"Identify failed: No model selected for {st.session_state.llm_provider}.", "WARNING")
                     st.warning(f"Cannot identify: No model selected for {st.session_state.llm_provider}.")
                 else:
@@ -286,9 +280,7 @@ if current_file:
                         st.session_state.identified_applications = identified
                         if identified:
                             st.success(f"Identified {len(identified)} potential applications.")
-                            # Initialize uploaded context files state for newly identified apps
                             st.session_state.uploaded_context_files = { app: [] for app in identified }
-                            # Update available context files list (for sidebar info) if needed
                             try:
                                 st.session_state.available_context_files = utils.get_available_context_files()
                             except Exception as e:
@@ -302,7 +294,7 @@ if current_file:
                         st.error("LLM initialization failed. Cannot identify applications. Check configuration and credentials in sidebar and logs.")
 
             # --- Step 3: Select Apps & Upload Context ---
-            # This function now handles the file uploaders
+            # This function handles the file uploaders
             ui_components.render_app_context_selection(st.session_state.identified_applications)
 
             # --- Step 4: Generate Button & Logic ---
@@ -312,7 +304,7 @@ if current_file:
                 num_selected = len(st.session_state.selected_applications)
                 if st.button(f"Generate Cases for {num_selected} Application(s)", key="generate_btn", type="primary"):
                     utils.log_message(f"'Generate Cases' button clicked for apps: {st.session_state.selected_applications}", "INFO")
-                    # Clear previous results and modification state
+
                     st.session_state.generated_test_cases = {}
                     st.session_state.modification_app_name = None; st.session_state.modification_tc_id = None
                     st.session_state.proposed_modification_data = None; st.session_state.original_tc_data_for_diff = None
@@ -339,7 +331,6 @@ if current_file:
                         if llm and embeddings:
                             utils.log_message("LLM and Embeddings ready, calling generate_test_cases...", "INFO")
 
-                            # *** MODIFIED CALL: Pass uploaded_context_files ***
                             results = llm_integration_core.generate_test_cases(
                                 st.session_state.extracted_text,
                                 st.session_state.selected_applications,
@@ -348,7 +339,6 @@ if current_file:
                                 embeddings,
                                 st.session_state.llm_provider
                             )
-                            # *** END MODIFICATION ***
 
                             st.session_state.generated_test_cases = results
                             utils.log_message(f"Generation process complete. Result keys: {list(results.keys())}", "INFO")
@@ -476,8 +466,8 @@ if current_file:
                                         utils.log_message("AI Review completed. Raw output received.", "INFO")
                                         st.session_state.ai_review_results_raw = review_output
                                         # Process raw results into a more structured format for UI
-                                        # For now, this is a direct assignment, assuming LLM returns the expected structure.
-                                        # More complex processing can be added here if needed.
+                                        # For now, this is a direct assignment, expecting the LLM to return proper  structure.
+                                        # PreProcessing can be added here once it's done
                                         processed_suggestions = {
                                             "coverage_summary": review_output.get("coverage_summary", "Not provided."),
                                             "newly_suggested_test_cases": review_output.get("newly_suggested_test_cases", []),
@@ -509,17 +499,14 @@ if current_file:
                                 st.session_state.ai_review_suggestions_processed.get('coverage_summary')
                             )
 
-                            # Display Suggestions (currently placeholder rendering)
-                            # This will be expanded to include interactive elements
                             ui_components.render_ai_suggestions(
                                 st.session_state.ai_review_suggestions_processed,
                                 selected_app_for_review
                             )
 
-                            # Render Apply Changes Button
                             ui_components.render_apply_ai_review_changes_button(selected_app_for_review)
 
-            # --- Logic to Apply AI Review Changes (triggered by button in ui_components) ---
+            # --- Apply AI Review Changes-
             if 'trigger_apply_ai_changes' in st.session_state and st.session_state.trigger_apply_ai_changes:
                 app_to_update = st.session_state.trigger_apply_ai_changes
                 utils.log_message(f"Attempting to apply AI review changes for app: {app_to_update}", "INFO")
@@ -621,8 +608,6 @@ if current_file:
                             if duplicates_removed_count > 0:
                                  utils.log_message(f"Removed {duplicates_removed_count} duplicate test cases for app '{app_to_update}'.", "INFO")
                     
-                    # Update overall changes_applied_count if you want to count removals as a change type,
-                    # or keep it separate. For user message, separate counts are clearer.
 
                     summary_messages = []
                     if new_tcs_applied_count > 0:
