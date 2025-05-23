@@ -1,6 +1,3 @@
-# llm_providers/llm_vertexai.py
-# Handles initialization for the Google Vertex AI provider, adapted for backend.
-
 from typing import Dict, Tuple, Optional
 
 # Langchain Core Imports

@@ -1,5 +1,3 @@
-# """Stores configuration constants and settings for the application."""
-
 import os
 
 # --- Application Settings ---

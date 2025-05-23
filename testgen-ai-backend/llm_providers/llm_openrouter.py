@@ -1,6 +1,3 @@
-# llm_providers/llm_openrouter.py
-# Handles initialization for the OpenRouter provider, adapted for backend.
-
 from typing import Dict, Tuple, Optional
 
 # Langchain Core Imports

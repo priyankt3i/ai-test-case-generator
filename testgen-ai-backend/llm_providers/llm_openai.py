@@ -1,6 +1,3 @@
-# llm_providers/llm_openai.py
-# Handles initialization for the OpenAI provider, adapted for backend.
-
 from typing import Dict, Tuple, Optional
 
 # Langchain Core Imports
