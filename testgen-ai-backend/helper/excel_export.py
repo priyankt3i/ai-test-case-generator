@@ -1,8 +1,9 @@
-# """Handles exporting the generated test cases to an Excel file."""
+"""Handles exporting the generated test cases to an Excel file."""
 
 import io
+import logging
 import pandas as pd
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 # Import config and utilities
 from config import EXCEL_EXPECTED_COLUMNS, EXCEL_MAX_COL_WIDTH, EXCEL_DEFAULT_COL_WIDTH, EXCEL_SHEET_NAME_MAX_LEN
@@ -77,17 +78,17 @@ def _set_excel_column_widths(worksheet, df: pd.DataFrame, column_list: List[str]
             width = min(max_len, EXCEL_MAX_COL_WIDTH)
             worksheet.set_column(i, i, width)
         except KeyError:
-             st.warning(f"Column '{col_name}' not found in DataFrame during width calculation. Using default width.")
-             worksheet.set_column(i, i, EXCEL_DEFAULT_COL_WIDTH)
+            logging.warning(f"Column '{col_name}' not found in DataFrame during width calculation. Using default width.")
+            worksheet.set_column(i, i, EXCEL_DEFAULT_COL_WIDTH)
         except (TypeError, ValueError) as e:
-             st.warning(f"Error calculating width for column '{col_name}': {e}. Using default width.")
-             worksheet.set_column(i, i, EXCEL_DEFAULT_COL_WIDTH)
+            logging.warning(f"Error calculating width for column '{col_name}': {e}. Using default width.")
+            worksheet.set_column(i, i, EXCEL_DEFAULT_COL_WIDTH)
         except Exception as e: # Broader fallback
-             st.warning(f"Unexpected error setting width for column '{col_name}': {e}. Using default width.")
-             worksheet.set_column(i, i, EXCEL_DEFAULT_COL_WIDTH)
+            logging.warning(f"Unexpected error setting width for column '{col_name}': {e}. Using default width.")
+            worksheet.set_column(i, i, EXCEL_DEFAULT_COL_WIDTH)
 
 
-def export_to_excel(test_cases_dict: Dict[str, Any]) -> bytes | None:
+def export_test_cases_to_excel_bytes(test_cases_dict: Dict[str, Any]) -> Optional[io.BytesIO]:
     """
     Exports the generated test cases dictionary to an Excel file in memory.
 
@@ -96,7 +97,7 @@ def export_to_excel(test_cases_dict: Dict[str, Any]) -> bytes | None:
                          test case dicts (or error strings) as values.
 
     Returns:
-        The Excel file content as bytes, or None if export fails.
+        BytesIO object containing the Excel file data, or None if export fails.
     """
     output = io.BytesIO()
     try:
@@ -127,16 +128,16 @@ def export_to_excel(test_cases_dict: Dict[str, Any]) -> bytes | None:
                     try:
                         df_to_write, final_cols = _prepare_dataframe(cases)
                     except Exception as df_err:
-                        st.warning(f"Error preparing DataFrame for '{app_name}': {df_err}")
+                        logging.warning(f"Error preparing DataFrame for '{app_name}': {df_err}")
                         # Create an error DataFrame for this sheet
                         df_to_write = pd.DataFrame({'Error': [f"Failed to process test case data: {df_err}"]})
                         final_cols = ['Error']
                 elif isinstance(cases, str): # Handle error strings from generation
-                     df_to_write = pd.DataFrame({'Status': [f"Generation error for '{app_name}': {cases}"]})
-                     final_cols = ['Status']
+                    df_to_write = pd.DataFrame({'Status': [f"Generation error for '{app_name}': {cases}"]})
+                    final_cols = ['Status']
                 else: # Handle empty lists or unexpected data types
-                     df_to_write = pd.DataFrame({'Status': [f"No valid test cases generated or found for '{app_name}'."]})
-                     final_cols = ['Status']
+                    df_to_write = pd.DataFrame({'Status': [f"No valid test cases generated or found for '{app_name}'."]})
+                    final_cols = ['Status']
 
                 # Write the DataFrame to the sheet
                 df_to_write.to_excel(writer, sheet_name=sheet_name, index=False)
@@ -147,12 +148,11 @@ def export_to_excel(test_cases_dict: Dict[str, Any]) -> bytes | None:
                     _set_excel_column_widths(worksheet, df_to_write, final_cols)
 
         output.seek(0)
-        return output.getvalue()
-
+        return output
     except XlsxWriterException as xe:
-        st.error(f"Failed to write Excel file using xlsxwriter: {xe}")
+        logging.error(f"Failed to write Excel file using xlsxwriter: {xe}")
         return None
     except Exception as e:
         # Catch potential pandas errors or other issues
-        st.error(f"An unexpected error occurred during Excel export: {e}")
+        logging.error(f"An unexpected error occurred during Excel export: {e}")
         return None

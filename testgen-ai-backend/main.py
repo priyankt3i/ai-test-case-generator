@@ -467,6 +467,10 @@ async def export_excel(request: ExportRequest):
 
         excel_bytes_io = export_test_cases_to_excel_bytes(valid_test_cases_data)
         
+        if excel_bytes_io is None:
+            log_message("Excel export failed: Could not generate Excel file.", "ERROR")
+            raise HTTPException(status_code=500, detail="Failed to generate Excel file.")
+            
         # Ensure filename is safe and has .xlsx extension
         filename = request.filename if request.filename.endswith(".xlsx") else f"{request.filename}.xlsx"
         # Basic sanitization for filename (more robust might be needed for production)
