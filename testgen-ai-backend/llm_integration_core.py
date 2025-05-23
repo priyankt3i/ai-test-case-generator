@@ -40,6 +40,8 @@ except ImportError as e:
 try:
     from llm_providers.llm_openai import _initialize_openai
     from llm_providers.llm_gemini import _initialize_gemini
+    from llm_providers.llm_openrouter import _initialize_openrouter
+    from llm_providers.llm_vertexai import _initialize_vertexai
     from llm_providers.llm_claude import _initialize_claude
     from llm_providers.llm_bedrock import _initialize_bedrock
     from llm_providers.llm_groq import _initialize_groq
@@ -59,8 +61,14 @@ def get_llm_and_embeddings(provider: str, model_name: str, credentials: Dict, fa
         log_message(f"Invalid provider selected: {provider}. No configuration found.", "ERROR")
         return None, None
     init_functions = {
-        "OpenAI": _initialize_openai, "Gemini": _initialize_gemini, "Claude": _initialize_claude,
-        "AWS Bedrock": _initialize_bedrock, "Groq": _initialize_groq, "Ollama": _initialize_ollama,
+        "OpenAI": _initialize_openai, 
+        "Gemini": _initialize_gemini, 
+        "Claude": _initialize_claude,
+        "AWS Bedrock": _initialize_bedrock, 
+        "Groq": _initialize_groq, 
+        "Ollama": _initialize_ollama,
+        "OpenRouter": _initialize_openrouter,
+        "Vertex AI": _initialize_vertexai
     }
     init_func = init_functions.get(provider)
     if not init_func:

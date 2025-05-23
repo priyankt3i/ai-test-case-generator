@@ -205,7 +205,6 @@ LLM_PROVIDER_CONFIG = {
         "embeddings_class": None,
         "notes": "Requires Groq API Key. **RAG embedding uses OpenAI fallback.**"
     },
-    # *** MODIFIED OLLAMA ENTRY ***
     "Ollama": {
         "models": ["llama3", "mistral", "phi3", "codellama", "gemma"],
         "credentials": ["base_url"],
@@ -214,7 +213,6 @@ LLM_PROVIDER_CONFIG = {
         "embeddings_module": "langchain_ollama", # Use new package if available
         "embeddings_class": "OllamaEmbeddings",
         "notes": "Requires Ollama server running. Ensure model is pulled.",
-        # *** ADDED prompt_templates dictionary for overrides ***
         "prompt_templates": {
             "IDENTIFY_APP": """You are an Senior Software QA Expert. Your task is to extract ONLY the names of software applications or distinct software systems from the following text.
             IGNORE features, file paths, URLs, or code snippets.
@@ -233,12 +231,29 @@ LLM_PROVIDER_CONFIG = {
             ```{text}```
 
             Python List Output:""",
-            # You could add overrides for "GENERATE_TC" or "REFACTOR_TC" here too if needed
-            # "GENERATE_TC": """Ollama-specific generation prompt...""",
         }
-        # *** END prompt_templates ***
+    },
+    "OpenRouter": {
+        "models": ["google/gemini-2.0-flash-exp:free", "google/gemini-2.5-pro-exp-03-25" , "mistralai/mistral-7b-instruct", "nousresearch/nous-hermes-2-mixtral-8x7b-dpo", "openrouter/cinematika-7b", "google/gemini-pro"],
+        "credentials": ["api_key"],
+        "llm_module": "langchain_openai",
+        "llm_class": "ChatOpenAI",
+        "embeddings_module": "langchain_openai",
+        "embeddings_class": "OpenAIEmbeddings",
+        "embeddings_model_id": "embed-lite",
+        "base_url": "https://openrouter.ai/api/v1",
+        "notes": "Requires OpenRouter API Key. Uses OpenAI-compatible API."
+    },
+        "Vertex AI": {
+        "models": ["gemini-pro", "gemini-1.5-pro-latest", "gemini-1.5-flash-latest"],
+        "credentials": ["project_id", "location"],
+        "llm_module": "langchain_google_vertexai",
+        "llm_class": "ChatVertexAI",
+        "embeddings_module": "langchain_google_vertexai",
+        "embeddings_class": "VertexAIEmbeddings",
+        "embeddings_model_id": "text-embedding-004", # Common Vertex AI embedding model
+        "notes": "Requires Google Cloud Project ID and Location (Region). Authentication typically via gcloud CLI or environment variables."
     }
-    # *** END MODIFIED OLLAMA ENTRY ***
 }
 
 # --- Fallback and RAG settings ---

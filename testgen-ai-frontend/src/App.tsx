@@ -154,7 +154,7 @@ function App() {
                 rel="noopener noreferrer"
                 aria-label="Personal Website"
               >
-                 <img src="https://www.svgrepo.com/show/512318/website-142.svg" alt="Website" style={{ height: 24, width: 24, filter: 'invert(100%)' }} />
+                 <img src="https://www.svgrepo.com/show/415803/website-ui-web.svg" alt="Website" style={{ height: 24, width: 24, filter: 'invert(100%)' }} />
               </IconButton>
             </Tooltip>
 
