@@ -1,4 +1,4 @@
-import React from 'react';
+import type React from 'react';
 import { Box, Button, CircularProgress, Alert } from '@mui/material';
 import { useAppStore } from '../store';
 import { generateTestCasesApi } from '../services/api';

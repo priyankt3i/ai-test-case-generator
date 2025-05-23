@@ -1,7 +1,9 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from typing import Dict
+import io
 
 # Assuming config.py is in the same directory or Python path
 import config as app_config
@@ -14,10 +16,12 @@ from schemas import (
     RefactorSingleTestCaseRequest, RefactorSingleTestCaseResponse,
     RefactorAllTestCasesRequest, RefactorAllTestCasesResponse,
     AIReviewRequest, AIReviewResponse,
-    ApplyAIReviewRequest, ApplyAIReviewResponse
+    ApplyAIReviewRequest, ApplyAIReviewResponse,
+    ExportRequest # Added ExportRequest
 )
 # Assuming helper.file_processing.py is in the helper directory
 from helper.file_processing import extract_text_from_file
+from helper.excel_export import export_test_cases_to_excel_bytes # Added excel export
 # Assuming llm_integration_core.py is in the same directory or Python path
 import llm_integration_core as llm_core
 from helper.utils import log_message # For logging within endpoints
@@ -443,6 +447,46 @@ async def apply_ai_review_action(app_name: str, request: ApplyAIReviewRequest):
         error_msg = f"An unexpected error occurred while applying AI review changes: {str(e)}"
         log_message(error_msg, "ERROR", exc_info=True)
         return ApplyAIReviewResponse(app_name=app_name, updated_test_cases=[], summary_message="", error=error_msg)
+
+@app.post("/api/export/excel")
+async def export_excel(request: ExportRequest):
+    """
+    Exports the provided test cases to an Excel file.
+    The request body should contain the test cases data and an optional filename.
+    """
+    log_message(f"Excel export request received for filename: {request.filename}", "INFO")
+    try:
+        # Filter out any app entries where the result is an error string instead of a list of TCs
+        valid_test_cases_data = {
+            app: tcs for app, tcs in request.test_cases_data.items() if isinstance(tcs, list)
+        }
+
+        if not valid_test_cases_data:
+            log_message("Excel export failed: No valid test case lists provided.", "WARNING")
+            raise HTTPException(status_code=400, detail="No valid test case data provided for export.")
+
+        excel_bytes_io = export_test_cases_to_excel_bytes(valid_test_cases_data)
+        
+        # Ensure filename is safe and has .xlsx extension
+        filename = request.filename if request.filename.endswith(".xlsx") else f"{request.filename}.xlsx"
+        # Basic sanitization for filename (more robust might be needed for production)
+        filename = "".join(c if c.isalnum() or c in ('.', '-', '_') else '_' for c in filename)
+        
+        log_message(f"Successfully generated excel bytes for {filename}", "INFO")
+        
+        return StreamingResponse(
+            excel_bytes_io,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except HTTPException:
+        raise # Re-raise HTTPException from above
+    except Exception as e:
+        log_message(f"Error during Excel export: {e}", "ERROR", exc_info=True)
+        # Return a JSON error response instead of raising HTTPException for non-HTTP specific errors
+        # This allows frontend to potentially parse it, though for file download, it's tricky.
+        # For simplicity here, we'll raise HTTPException, but a real app might handle this differently.
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred during Excel export: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

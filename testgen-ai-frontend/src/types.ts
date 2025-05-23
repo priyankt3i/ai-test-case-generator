@@ -63,6 +63,71 @@ export interface GenerateTestCasesResponse {
   error?: string | null; // For overall errors
 }
 
+export interface RefactorSingleTestCaseRequest {
+  app_name: string;
+  tc_id: string;
+  instructions: string;
+  original_tc_data: Record<string, any>; // Or a more specific TestCase type if available
+  llm_provider: string;
+  model_name: string;
+  api_credentials: Record<string, string>;
+  openai_fallback_api_key?: string | null;
+}
+
+export interface RefactorSingleTestCaseResponse {
+  refactored_tc_data?: Record<string, any> | null; // Or a more specific TestCase type
+  error?: string | null;
+}
+
+export interface RefactorAllTestCasesRequest {
+  instructions: string;
+  original_tc_list: Array<Record<string, any>>; // Or Array<TestCase>
+  llm_provider: string;
+  model_name: string;
+  api_credentials: Record<string, string>;
+  openai_fallback_api_key?: string | null;
+}
+
+export interface RefactorAllTestCasesResponse {
+  app_name: string;
+  refactored_test_cases?: Array<Record<string, any>> | null; // Or Array<TestCase>
+  error?: string | null;
+}
+
+export interface AIReviewRequest {
+  main_requirements_text: string;
+  additional_context_str: string;
+  existing_test_cases: Array<Record<string, any>>; // Or Array<TestCase>
+  llm_provider: string;
+  model_name: string;
+  api_credentials: Record<string, string>;
+  openai_fallback_api_key?: string | null;
+}
+
+export interface AIReviewResponse {
+  app_name: string;
+  review_results?: Record<string, any> | null; // Contains coverage_summary, newly_suggested_test_cases, etc.
+  error?: string | null;
+}
+
+export interface ApplyAIReviewRequest {
+  existing_test_cases: Array<Record<string, any>>; // Or Array<TestCase>
+  ai_review_suggestions_processed: Record<string, any>;
+  user_decisions: Record<string, string>;
+}
+
+export interface ApplyAIReviewResponse {
+  app_name: string;
+  updated_test_cases: Array<Record<string, any>>; // Or Array<TestCase>
+  summary_message: string;
+  error?: string | null;
+}
+
+export interface ExportRequest {
+  test_cases_data: Record<string, Array<Record<string, any>>>; // AppName -> List of TC Dictionaries
+  filename?: string; // Optional on frontend, backend can default
+}
+
 // Example for a test case structure, if you plan to manage them in frontend state
 export interface TestCase {
   id: string; // Or "Test Case ID": string;

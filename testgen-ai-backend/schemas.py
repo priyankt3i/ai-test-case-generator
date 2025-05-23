@@ -22,6 +22,11 @@ class RequirementsUploadResponse(BaseModel):
     extracted_text: Optional[str] = None
     error: Optional[str] = None
 
+class ExportRequest(BaseModel):
+    # Data structure: { "AppName1": [tc1_dict, tc2_dict], "AppName2": [...] }
+    test_cases_data: Dict[str, List[Dict[str, Any]]] 
+    filename: str = "test_cases_export.xlsx"
+
 class GenerateTestCasesRequest(BaseModel):
     main_requirements_text: str
     selected_applications: List[str]

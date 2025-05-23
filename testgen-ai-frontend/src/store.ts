@@ -29,6 +29,34 @@ interface AppState {
   isGeneratingTestCases: boolean;
   generateTestCasesError: string | null;
 
+  // Single Test Case Refactoring State
+  isRefactorDialogOpen: boolean;
+  refactoringTestCase: { appName: string; tcId: string; originalData: any } | null; // 'any' for now, ideally TestCase
+  refactorInstructions: string;
+  isRefactoringSingleTc: boolean;
+  refactorSingleTcError: string | null;
+
+  // Bulk Test Case Refactoring State
+  isBulkRefactorDialogOpen: boolean;
+  bulkRefactoringAppName: string | null;
+  bulkRefactorInstructions: string;
+  isRefactoringBulkTc: boolean;
+  refactorBulkTcError: string | null;
+
+  // AI Review - Get Suggestions State
+  // Stores review data per app: { appName: { coverage_summary: "...", newly_suggested_test_cases: [...], ... } }
+  aiReviewData: Record<string, any>; 
+  isPerformingAiReview: Record<string, boolean>; 
+  performAiReviewError: Record<string, string | null>; 
+
+  // AI Review - Apply Changes State
+  aiReviewUserDecisions: Record<string, Record<string, string>>;
+  isApplyingAiReview: Record<string, boolean>; 
+  applyAiReviewError: Record<string, string | null>; 
+
+  // Export to Excel State
+  isExportingToExcel: boolean;
+  exportToExcelError: string | null;
 
   // Actions to update state
   setLlmProviders: (providers: Record<string, LLMProviderDetail>) => void;
@@ -47,6 +75,29 @@ interface AppState {
   setGeneratedTestCases: (results: Record<string, any>) => void;
   setIsGeneratingTestCases: (loading: boolean) => void;
   setGenerateTestCasesError: (error: string | null) => void;
+  openRefactorDialog: (appName: string, tcId: string, originalData: any) => void;
+  closeRefactorDialog: () => void;
+  setRefactorInstructions: (instructions: string) => void;
+  updateSingleTestCase: (appName: string, tcId: string, updatedTcData: any) => void;
+  setIsRefactoringSingleTc: (loading: boolean) => void;
+  setRefactorSingleTcError: (error: string | null) => void;
+  openBulkRefactorDialog: (appName: string) => void;
+  closeBulkRefactorDialog: () => void;
+  setBulkRefactorInstructions: (instructions: string) => void;
+  updateAllTestCasesForApp: (appName: string, updatedTcList: any[]) => void;
+  setIsRefactoringBulkTc: (loading: boolean) => void;
+  setRefactorBulkTcError: (error: string | null) => void;
+  setAiReviewData: (appName: string, reviewData: any) => void;
+  setIsPerformingAiReview: (appName: string, loading: boolean) => void;
+  setPerformAiReviewError: (appName: string, error: string | null) => void;
+  clearAiReviewStateForApp: (appName: string) => void;
+  setAiReviewUserDecision: (appName: string, suggestionId: string, decision: string) => void;
+  clearAiReviewUserDecisionsForApp: (appName: string) => void;
+  updateTestCasesAfterAiReview: (appName: string, updatedTestCases: any[]) => void;
+  setIsApplyingAiReview: (appName: string, loading: boolean) => void;
+  setApplyAiReviewError: (appName: string, error: string | null) => void;
+  setIsExportingToExcel: (loading: boolean) => void;
+  setExportToExcelError: (error: string | null) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -66,6 +117,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   generatedTestCases: {},
   isGeneratingTestCases: false,
   generateTestCasesError: null,
+  isRefactorDialogOpen: false,
+  refactoringTestCase: null,
+  refactorInstructions: '',
+  isRefactoringSingleTc: false,
+  refactorSingleTcError: null,
+  isBulkRefactorDialogOpen: false,
+  bulkRefactoringAppName: null,
+  bulkRefactorInstructions: '',
+  isRefactoringBulkTc: false,
+  refactorBulkTcError: null,
+  aiReviewData: {},
+  isPerformingAiReview: {},
+  performAiReviewError: {},
+  aiReviewUserDecisions: {},
+  isApplyingAiReview: {},
+  applyAiReviewError: {},
+  isExportingToExcel: false,
+  exportToExcelError: null,
 
   // Actions
   setLlmProviders: (providers) => set({ 
@@ -163,6 +232,133 @@ export const useAppStore = create<AppState>((set, get) => ({
   setGeneratedTestCases: (results) => set({ generatedTestCases: results, generateTestCasesError: null, isGeneratingTestCases: false }),
   setIsGeneratingTestCases: (loading) => set({ isGeneratingTestCases: loading }),
   setGenerateTestCasesError: (error) => set({ generateTestCasesError: error, isGeneratingTestCases: false, generatedTestCases: {} }),
+
+  openRefactorDialog: (appName, tcId, originalData) => set({ 
+    isRefactorDialogOpen: true, 
+    refactoringTestCase: { appName, tcId, originalData },
+    refactorInstructions: '', // Clear previous instructions
+    refactorSingleTcError: null 
+  }),
+  closeRefactorDialog: () => set({ 
+    isRefactorDialogOpen: false, 
+    refactoringTestCase: null, 
+    refactorInstructions: '',
+    isRefactoringSingleTc: false, // Reset loading state
+    refactorSingleTcError: null
+  }),
+  setRefactorInstructions: (instructions) => set({ refactorInstructions: instructions }),
+  
+  updateSingleTestCase: (appName, tcId, updatedTcData) => set((state) => {
+    const appTestCases = state.generatedTestCases[appName];
+    if (Array.isArray(appTestCases)) {
+      const updatedAppTestCases = appTestCases.map(tc => 
+        (tc['Test Case ID'] === tcId || tc.id === tcId) ? { ...tc, ...updatedTcData, 'Test Case ID': tcId } : tc
+      );
+      return {
+        generatedTestCases: {
+          ...state.generatedTestCases,
+          [appName]: updatedAppTestCases,
+        },
+        refactorSingleTcError: null,
+        isRefactoringSingleTc: false,
+        isRefactorDialogOpen: false, // Close dialog on success
+        refactoringTestCase: null,
+      };
+    }
+    return {}; // No change if app or test cases not found
+  }),
+  setIsRefactoringSingleTc: (loading) => set({ isRefactoringSingleTc: loading }),
+  setRefactorSingleTcError: (error) => set({ refactorSingleTcError: error, isRefactoringSingleTc: false }),
+
+  openBulkRefactorDialog: (appName) => set({
+    isBulkRefactorDialogOpen: true,
+    bulkRefactoringAppName: appName,
+    bulkRefactorInstructions: '',
+    refactorBulkTcError: null,
+  }),
+  closeBulkRefactorDialog: () => set({
+    isBulkRefactorDialogOpen: false,
+    bulkRefactoringAppName: null,
+    bulkRefactorInstructions: '',
+    isRefactoringBulkTc: false,
+    refactorBulkTcError: null,
+  }),
+  setBulkRefactorInstructions: (instructions) => set({ bulkRefactorInstructions: instructions }),
+
+  updateAllTestCasesForApp: (appName, updatedTcList) => set((state) => ({
+    generatedTestCases: {
+      ...state.generatedTestCases,
+      [appName]: updatedTcList,
+    },
+    refactorBulkTcError: null,
+    isRefactoringBulkTc: false,
+    isBulkRefactorDialogOpen: false, // Close dialog on success
+    bulkRefactoringAppName: null,
+  })),
+  setIsRefactoringBulkTc: (loading) => set({ isRefactoringBulkTc: loading }),
+  setRefactorBulkTcError: (error) => set({ refactorBulkTcError: error, isRefactoringBulkTc: false }),
+
+  setAiReviewData: (appName, reviewData) => set((state) => ({
+    aiReviewData: { ...state.aiReviewData, [appName]: reviewData },
+    performAiReviewError: { ...state.performAiReviewError, [appName]: null },
+    isPerformingAiReview: { ...state.isPerformingAiReview, [appName]: false },
+  })),
+  setIsPerformingAiReview: (appName, loading) => set((state) => ({
+    isPerformingAiReview: { ...state.isPerformingAiReview, [appName]: loading },
+    ...(loading && { performAiReviewError: { ...state.performAiReviewError, [appName]: null } }), // Clear error on new attempt
+    ...(loading && { aiReviewData: { ...state.aiReviewData, [appName]: null } }), // Clear old data on new attempt
+  })),
+  setPerformAiReviewError: (appName, error) => set((state) => ({
+    performAiReviewError: { ...state.performAiReviewError, [appName]: error },
+    isPerformingAiReview: { ...state.isPerformingAiReview, [appName]: false },
+  })),
+  clearAiReviewStateForApp: (appName) => set((state) => ({
+    aiReviewData: { ...state.aiReviewData, [appName]: null },
+    isPerformingAiReview: { ...state.isPerformingAiReview, [appName]: false },
+    performAiReviewError: { ...state.performAiReviewError, [appName]: null },
+    aiReviewUserDecisions: { ...state.aiReviewUserDecisions, [appName]: {} }, // Clear decisions too
+  })),
+
+  setAiReviewUserDecision: (appName, suggestionId, decision) => set((state) => ({
+    aiReviewUserDecisions: {
+      ...state.aiReviewUserDecisions,
+      [appName]: {
+        ...(state.aiReviewUserDecisions[appName] || {}),
+        [suggestionId]: decision,
+      },
+    },
+  })),
+  clearAiReviewUserDecisionsForApp: (appName) => set((state) => ({
+    aiReviewUserDecisions: {
+      ...state.aiReviewUserDecisions,
+      [appName]: {},
+    },
+  })),
+  updateTestCasesAfterAiReview: (appName, updatedTestCases) => set((state) => ({
+    generatedTestCases: {
+      ...state.generatedTestCases,
+      [appName]: updatedTestCases,
+    },
+    applyAiReviewError: { ...state.applyAiReviewError, [appName]: null },
+    isApplyingAiReview: { ...state.isApplyingAiReview, [appName]: false },
+    // Optionally clear aiReviewData and decisions for the app after applying
+    // aiReviewData: { ...state.aiReviewData, [appName]: null }, 
+    // aiReviewUserDecisions: { ...state.aiReviewUserDecisions, [appName]: {} },
+  })),
+  setIsApplyingAiReview: (appName, loading) => set((state) => ({
+    isApplyingAiReview: { ...state.isApplyingAiReview, [appName]: loading },
+    ...(loading && { applyAiReviewError: { ...state.applyAiReviewError, [appName]: null } }),
+  })),
+  setApplyAiReviewError: (appName, error) => set((state) => ({
+    applyAiReviewError: { ...state.applyAiReviewError, [appName]: error },
+    isApplyingAiReview: { ...state.isApplyingAiReview, [appName]: false },
+  })),
+
+  setIsExportingToExcel: (loading) => set({ 
+    isExportingToExcel: loading,
+    ...(loading && { exportToExcelError: null }) // Clear error on new attempt
+  }),
+  setExportToExcelError: (error) => set({ exportToExcelError: error, isExportingToExcel: false }),
 }));
 
 // Types like LLMProviderDetail are now in src/types.ts

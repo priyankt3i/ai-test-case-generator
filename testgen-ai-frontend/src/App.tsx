@@ -1,15 +1,26 @@
 import React from 'react';
-// Removed List, SettingsIcon, ListItemButton, ListItemText, ListItemIcon, UploadFileIcon
-import { Box, CssBaseline, AppBar, Toolbar, Typography, Drawer, Divider, ThemeProvider, createTheme } from '@mui/material'; 
+import { Box, CssBaseline, AppBar, Toolbar, Typography, Drawer, Divider, ThemeProvider, createTheme, IconButton, Tooltip } from '@mui/material'; 
 import DescriptionIcon from '@mui/icons-material/Description';
+// It's better to use MUI icons if available for consistency, or ensure SVGs are handled correctly.
+// For now, using img tags for external SVGs as per svg.yaml.
+// import LinkedInIcon from '@mui/icons-material/LinkedIn';
+// import GitHubIcon from '@mui/icons-material/GitHub';
+// import LanguageIcon from '@mui/icons-material/Language';
 import LLMConfigSidebar from './components/LLMConfigSidebar';
 import RequirementsUploader from './components/RequirementsUploader';
 import IdentifyApplications from './components/IdentifyApplications';
 import AppContextSelection from './components/AppContextSelection';
-import GenerateTestCasesButton from './components/GenerateTestCasesButton'; // Import the new component
-import { useAppStore } from './store'; // Import the store
+import GenerateTestCasesButton from './components/GenerateTestCasesButton';
+import TestCasesDisplay from './components/TestCasesDisplay';
+import RefactorTestCaseDialog from './components/RefactorTestCaseDialog';
+import BulkRefactorDialog from './components/BulkRefactorDialog';
+import { useAppStore } from './store'; 
+import { exportToExcelApi } from './services/api'; // For export
+import type { ExportRequest } from './types'; // For export
+import FileDownloadIcon from '@mui/icons-material/FileDownload'; // For export button
+import { Alert as MuiAlert, CircularProgress as MuiCircularProgress, Button as MuiButton } from '@mui/material'; // Aliasing for clarity if needed
 
-const drawerWidth = 300; // Increased drawer width
+const drawerWidth = 300; 
 
 // A simple theme for now
 const theme = createTheme({
@@ -37,6 +48,66 @@ const theme = createTheme({
 
 function App() {
   const extractedRequirementsText = useAppStore((state) => state.extractedRequirementsText);
+  const generatedTestCases = useAppStore((state) => state.generatedTestCases);
+  const isExportingToExcel = useAppStore((state) => state.isExportingToExcel);
+  const exportToExcelError = useAppStore((state) => state.exportToExcelError);
+  const setIsExportingToExcel = useAppStore((state) => state.setIsExportingToExcel);
+  const setExportToExcelError = useAppStore((state) => state.setExportToExcelError);
+
+  const handleExportToExcel = async () => {
+    setIsExportingToExcel(true);
+    setExportToExcelError(null);
+
+    const validTestCasesData: Record<string, Array<Record<string, any>>> = {};
+    Object.entries(generatedTestCases).forEach(([appName, tcs]) => {
+      if (Array.isArray(tcs) && tcs.length > 0) {
+        validTestCasesData[appName] = tcs;
+      }
+    });
+
+    if (Object.keys(validTestCasesData).length === 0) {
+      setExportToExcelError("No valid test cases available to export.");
+      setIsExportingToExcel(false);
+      return;
+    }
+
+    const requestData: ExportRequest = {
+      test_cases_data: validTestCasesData,
+      filename: `test_cases_export_${new Date().toISOString().split('T')[0]}.xlsx`
+    };
+
+    try {
+      const blob = await exportToExcelApi(requestData);
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', requestData.filename || 'test_cases.xlsx');
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode?.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error: any) {
+      console.error("Export to Excel error:", error);
+      // If the error is a blob, it might be a JSON error from the backend
+      if (error instanceof Blob && error.type === "application/json") {
+        const errText = await error.text();
+        try {
+          const errJson = JSON.parse(errText);
+          setExportToExcelError(errJson.detail || "Failed to export to Excel. Backend error.");
+        } catch (parseError) {
+          setExportToExcelError("Failed to export to Excel and could not parse error response.");
+        }
+      } else if (error.detail) { // From Axios error rethrow
+         setExportToExcelError(error.detail);
+      }
+      else {
+        setExportToExcelError("Failed to export to Excel. An unexpected error occurred.");
+      }
+    } finally {
+      setIsExportingToExcel(false);
+    }
+  };
+
 
   return (
     <ThemeProvider theme={theme}>
@@ -48,9 +119,45 @@ function App() {
         >
           <Toolbar>
             <DescriptionIcon sx={{mr: 1}}/>
-            <Typography variant="h6" noWrap component="div">
+            <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
               TestGen AI 🧪
             </Typography>
+            
+            {/* Social Icons */}
+            <Tooltip title="GitHub Profile">
+              <IconButton 
+                color="inherit" 
+                href="https://github.com/priyankt3i" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                aria-label="GitHub Profile"
+              >
+                <img src="https://www.svgrepo.com/show/512317/github-142.svg" alt="GitHub" style={{ height: 24, width: 24, filter: 'invert(100%)' }} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="LinkedIn Profile">
+              <IconButton 
+                color="inherit" 
+                href="https://www.linkedin.com/in/priyankt3i/" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                aria-label="LinkedIn Profile"
+              >
+                 <img src="https://www.svgrepo.com/show/521725/linkedin.svg" alt="LinkedIn" style={{ height: 24, width: 24, filter: 'invert(100%)' }} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Personal Website">
+              <IconButton 
+                color="inherit" 
+                href="https://kumarpriyank.com/" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                aria-label="Personal Website"
+              >
+                 <img src="https://www.svgrepo.com/show/512318/website-142.svg" alt="Website" style={{ height: 24, width: 24, filter: 'invert(100%)' }} />
+              </IconButton>
+            </Tooltip>
+
           </Toolbar>
         </AppBar>
         <Drawer
@@ -127,9 +234,35 @@ function App() {
           {/* Add GenerateTestCasesButton component here */}
           {/* This should be shown if apps are selected, etc. The button itself handles its disabled state. */}
           <GenerateTestCasesButton />
+
+          {/* Add TestCasesDisplay component here */}
+          <TestCasesDisplay />
+
+          {Object.keys(generatedTestCases).length > 0 && (
+            <Box sx={{ mt: 3, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <MuiButton
+                variant="contained"
+                color="success"
+                startIcon={isExportingToExcel ? <MuiCircularProgress size={20} color="inherit" /> : <FileDownloadIcon />}
+                onClick={handleExportToExcel}
+                disabled={isExportingToExcel || Object.values(generatedTestCases).every(val => typeof val === 'string' || val.length === 0)}
+                sx={{minWidth: '200px'}}
+              >
+                {isExportingToExcel ? 'Exporting...' : 'Export All to Excel'}
+              </MuiButton>
+              {exportToExcelError && (
+                <MuiAlert severity="error" sx={{ mt: 1, width: '100%', maxWidth: '600px' }}>
+                  {exportToExcelError}
+                </MuiAlert>
+              )}
+            </Box>
+          )}
           
           {/* Further main content will go here - e.g., results display, etc. */}
         </Box>
+        {/* Globally rendered dialogs */}
+        <RefactorTestCaseDialog />
+        <BulkRefactorDialog />
       </Box>
     </ThemeProvider>
   );

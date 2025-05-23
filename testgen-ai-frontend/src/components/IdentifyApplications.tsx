@@ -1,5 +1,5 @@
-import React from 'react';
-import { Box, Button, Typography, CircularProgress, Alert, List, ListItem, ListItemText, Paper } from '@mui/material';
+import type React from 'react';
+import { Box, Button, Typography, CircularProgress, Alert, List, ListItem, ListItemText, Paper, Backdrop } from '@mui/material'; // Added Backdrop
 import { useAppStore } from '../store';
 import { identifyApplicationsApi } from '../services/api';
 import type { IdentifyAppRequest } from '../types'; // Use type-only import
@@ -19,6 +19,8 @@ const IdentifyApplications: React.FC = () => {
     setIdentifyAppsError,
   } = useAppStore();
 
+  console.log('[IdentifyApplications] Render - isIdentifyingApps from store:', isIdentifyingApps);
+
   const handleIdentifyApplications = async () => {
     if (!extractedRequirementsText) {
       setIdentifyAppsError("Please upload and extract text from a requirements document first.");
@@ -29,9 +31,11 @@ const IdentifyApplications: React.FC = () => {
       return;
     }
 
+    console.log('[IdentifyApplications] handleIdentifyApplications - Setting isIdentifyingApps to true');
     setIsIdentifyingApps(true);
     setIdentifyAppsError(null);
 
+    // const requestData: IdentifyAppRequest = { // Removed artificial delay and the setTimeout
     const requestData: IdentifyAppRequest = {
       extracted_text: extractedRequirementsText,
       llm_provider: selectedProvider,
@@ -52,6 +56,7 @@ const IdentifyApplications: React.FC = () => {
       const errorMsg = error?.error || error?.detail || 'Failed to identify applications.';
       setIdentifyAppsError(errorMsg);
     } finally {
+      console.log('[IdentifyApplications] handleIdentifyApplications - Setting isIdentifyingApps to false in finally block');
       setIsIdentifyingApps(false);
     }
   };
@@ -67,7 +72,20 @@ const IdentifyApplications: React.FC = () => {
         {isIdentifyingApps ? <CircularProgress size={24} color="inherit" /> : '1. Identify Applications from Requirements'}
       </Button>
 
-      {isIdentifyingApps && <CircularProgress sx={{ display: 'block', margin: '20px auto' }} />}
+      {/* Diagnostic text for loading state */}
+      <Typography variant="caption" sx={{ display: 'block', mt: 1, color: isIdentifyingApps ? 'red' : 'green' }}>
+        {isIdentifyingApps ? "DEBUG: Loading state is TRUE" : "DEBUG: Loading state is FALSE"}
+      </Typography>
+
+      <Backdrop
+        sx={{ color: '#fff', zIndex: (theme) => theme.zIndex.drawer + 100 }} // Ensure it's above other elements
+        open={isIdentifyingApps}
+      >
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'white' }}>
+          <CircularProgress color="inherit" sx={{ mb: 2 }} />
+          <Typography variant="h6">Identifying Applications...</Typography>
+        </Box>
+      </Backdrop>
       
       {identifyAppsError && (
         <Alert severity="error" sx={{ mt: 2 }}>
