@@ -15,52 +15,60 @@ from xlsxwriter.exceptions import XlsxWriterException
 def _prepare_dataframe(cases: List[Dict]) -> Tuple[pd.DataFrame, List[str]]:
     """
     Creates and standardizes a DataFrame from a list of test case dicts.
-
-    Args:
-        cases: A list of dictionaries, each representing a test case.
-
-    Returns:
-        A tuple containing:
-        - pd.DataFrame: The prepared DataFrame.
-        - List[str]: The final ordered list of column names in the DataFrame.
+    This version expands test cases with multiple steps into multiple rows.
     """
-    df = pd.DataFrame(cases)
-    rename_dict = {}
-    existing_cols_lower = {col.lower(): col for col in df.columns}
-    final_cols_ordered = []
+    expanded_cases = []
+    for case in cases:
+        test_steps = case.get('Test Steps', [])
+        expected_results = case.get('Expected Results', [])
 
-    # Ensure expected columns exist, match case-insensitively, and order them
-    for expected_col in EXCEL_EXPECTED_COLUMNS:
-        actual_col = existing_cols_lower.get(expected_col.lower())
-        if actual_col:
-            final_cols_ordered.append(actual_col)
-            # If the LLM used different casing, map it to the expected casing
-            if actual_col != expected_col:
-                rename_dict[actual_col] = expected_col
-        else:
-            # Add missing expected columns with empty values
-            df[expected_col] = pd.NA # Use pandas NA for consistency
-            final_cols_ordered.append(expected_col)
+        if isinstance(test_steps, str):
+            test_steps = [test_steps]
+        if isinstance(expected_results, str):
+            expected_results = [expected_results]
 
-    # Include any other columns the LLM might have added, placing them at the end
-    other_cols = [
-        col for col in df.columns
-        if col not in final_cols_ordered and col not in rename_dict.keys() and col not in EXCEL_EXPECTED_COLUMNS
-    ]
-    final_column_list_before_rename = final_cols_ordered + other_cols
+        num_steps = max(len(test_steps), len(expected_results))
 
-    # Select columns in the desired order
-    df = df[final_column_list_before_rename]
+        if num_steps == 0:
+            # Add a single row with empty step/result
+            row = case.copy()
+            row['Step #'] = ''
+            row['Test Steps'] = ''
+            row['Expected Results'] = ''
+            expanded_cases.append(row)
+            continue
 
-    # Apply renaming to standard column names
-    if rename_dict:
-        df = df.rename(columns=rename_dict)
-        # Get the final list of names *after* renaming
-        final_column_list = [rename_dict.get(col, col) for col in final_column_list_before_rename]
-    else:
-        final_column_list = final_column_list_before_rename
+        for i in range(num_steps):
+            step = test_steps[i] if i < len(test_steps) else ""
+            result = expected_results[i] if i < len(expected_results) else ""
 
-    return df, final_column_list
+            if i == 0:
+                # First row contains all the main info
+                row = case.copy()
+                row['Step #'] = i + 1
+                row['Test Steps'] = step
+                row['Expected Results'] = result
+                expanded_cases.append(row)
+            else:
+                # Subsequent rows are mostly empty
+                row = {col: '' for col in EXCEL_EXPECTED_COLUMNS}
+                row['Test Case ID'] = '' # Keep this empty for the merged look
+                row['Step #'] = i + 1
+                row['Test Steps'] = step
+                row['Expected Results'] = result
+                expanded_cases.append(row)
+
+    df = pd.DataFrame(expanded_cases)
+    
+    # Ensure all expected columns are present
+    for col in EXCEL_EXPECTED_COLUMNS:
+        if col not in df.columns:
+            df[col] = ''
+
+    # Reorder columns to match the expected order
+    df = df[EXCEL_EXPECTED_COLUMNS]
+
+    return df, EXCEL_EXPECTED_COLUMNS
 
 
 def _set_excel_column_widths(worksheet, df: pd.DataFrame, column_list: List[str]):

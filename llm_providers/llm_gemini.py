@@ -2,6 +2,7 @@
 
 import streamlit as st
 from typing import Dict, Tuple, Optional
+import asyncio
 
 # Langchain Core Imports
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -44,6 +45,15 @@ def _initialize_gemini(config_dict: Dict, credentials: Dict, model_name: str) ->
         A tuple containing the initialized LLM and Embeddings objects, or (None, None) on failure.
     """
     log_message("Initializing Gemini provider...", "INFO")
+    
+    # Ensure an asyncio event loop is running in the current thread
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # 'RuntimeError: There is no current event loop...'
+        log_message("No asyncio event loop found, creating a new one for the current thread.", "INFO")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
     api_key = credentials.get("api_key")
     if not api_key:
         log_message("Gemini init failed: API key missing.", "ERROR")

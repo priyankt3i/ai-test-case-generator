@@ -36,6 +36,25 @@ except ImportError as e:
     # st.stop()
 
 
+def get_ollama_models(base_url: str) -> list[str]:
+    """
+    Fetches the list of available models from an Ollama server.
+
+    Args:
+        base_url: The base URL of the Ollama server.
+
+    Returns:
+        A list of model names.
+    """
+    try:
+        response = requests.get(f"{base_url}/api/tags", timeout=5)
+        response.raise_for_status()
+        models = response.json().get("models", [])
+        return [model["name"] for model in models]
+    except requests.exceptions.RequestException as e:
+        log_message(f"Could not fetch Ollama models from {base_url}: {e}", "ERROR")
+        return []
+
 def _initialize_ollama(config_dict: Dict, credentials: Dict, model_name: str) -> Tuple[Optional[BaseChatModel], Optional[Embeddings]]:
     """
     Initializes Ollama LLM and Embeddings based on provided configuration and credentials.

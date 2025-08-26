@@ -37,6 +37,8 @@ GENERATE_TC_PROMPT_TEMPLATE = """You are an expert QA Analyst generating test ca
 **Carefully consider both the 'Requirements Context Retrieved' below and each test cases should be mapped to FR or BR ID, for traceability AND any 'Additional Context' provided within the 'User Input Query/Focus' when generating the test cases, especially for populating fields like 'Test Data'.**
 
 Format your response *only* as a single JSON list of objects. Each object represents a test case and must include these fields: `{field_names}`.
+The 'Test Steps' and 'Expected Results' should be lists of strings, where each string is a separate step or result. The number of test steps should match the number of expected results.
+
 Ensure the JSON is valid. Do not include any text before or after the JSON list.
 
 Requirements Context Retrieved:
@@ -148,23 +150,30 @@ LLM_PROVIDER_CONFIG = {
         "llm_class": "ChatOpenAI",
         "embeddings_module": "langchain_openai",
         "embeddings_class": "OpenAIEmbeddings",
-        "notes": "Requires OpenAI API Key."
-        # No 'prompt_templates' needed if defaults work well for OpenAI
+        "notes": "Requires OpenAI API Key.",
+        "pricing": {
+            "gpt-4o": {"input": 0.005, "output": 0.015},
+            "gpt-4-turbo": {"input": 0.01, "output": 0.03},
+            "gpt-4": {"input": 0.03, "output": 0.06},
+            "gpt-3.5-turbo": {"input": 0.0005, "output": 0.0015}
+        }
     },
     "Gemini": {
-        "models": ["gemini-2.5-pro-preview-03-25", 
-                   "gemini-2.5-flash-preview-04-17",
-                   "gemini-2.5.pro-exp-03-25", 
-                   "gemini-1.5-flash-latest", 
-                   "gemini-1.5-pro-latest", 
-                   "gemini-pro"],
+        "models": ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest", "gemini-pro", "gemini-2.5-pro", "gemini-2.5-flash"],
         "credentials": ["api_key"],
         "llm_module": "langchain_google_genai",
         "llm_class": "ChatGoogleGenerativeAI",
         "embeddings_module": "langchain_google_genai",
         "embeddings_class": "GoogleGenerativeAIEmbeddings",
         "embeddings_model_id": "models/embedding-001",
-        "notes": "Requires Google API Key (often called GOOGLE_API_KEY)."
+        "notes": "Requires Google API Key (often called GOOGLE_API_KEY).",
+        "pricing": {
+            "gemini-1.5-pro-latest": {"input": 0.0035, "output": 0.0105},
+            "gemini-1.5-flash-latest": {"input": 0.00035, "output": 0.00105},
+            "gemini-pro": {"input": 0.00025, "output": 0.0005},
+            "gemini-2.5-pro": {"input": 0.00125, "output": 0.01},
+            "gemini-2.5-flash": {"input": 0.0003, "output": 0.0025}
+        }
     },
     "Claude": {
         "models": ["claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"],
@@ -173,7 +182,12 @@ LLM_PROVIDER_CONFIG = {
         "llm_class": "ChatAnthropic",
         "embeddings_module": None,
         "embeddings_class": None,
-        "notes": "Requires Anthropic API Key. **RAG embedding uses OpenAI fallback.**"
+        "notes": "Requires Anthropic API Key. **RAG embedding uses OpenAI fallback.**",
+        "pricing": {
+            "claude-3-opus-20240229": {"input": 0.015, "output": 0.075},
+            "claude-3-sonnet-20240229": {"input": 0.003, "output": 0.015},
+            "claude-3-haiku-20240307": {"input": 0.00025, "output": 0.00125}
+        }
     },
     "AWS Bedrock": {
         "models": [
@@ -197,13 +211,19 @@ LLM_PROVIDER_CONFIG = {
         "notes": "Requires AWS Credentials and Region. Select Embedding Model ID."
     },
      "Groq": {
-        "models": ["deepseek-r1-distill-qwen-32b", "deepseek-r1-distill-llama-70b", "llama3-8b-8192", "llama3-70b-8192", "mixtral-8x7b-32768", "gemma-7b-it"],
+        "models": ["llama3-8b-8192", "llama3-70b-8192", "mixtral-8x7b-32768", "gemma-7b-it"],
         "credentials": ["api_key"],
         "llm_module": "langchain_groq",
         "llm_class": "ChatGroq",
         "embeddings_module": None,
         "embeddings_class": None,
-        "notes": "Requires Groq API Key. **RAG embedding uses OpenAI fallback.**"
+        "notes": "Requires Groq API Key. **RAG embedding uses OpenAI fallback.**",
+        "pricing": {
+            "llama3-8b-8192": {"input": 0.00005, "output": 0.00008},
+            "llama3-70b-8192": {"input": 0.00059, "output": 0.00079},
+            "mixtral-8x7b-32768": {"input": 0.00024, "output": 0.00024},
+            "gemma-7b-it": {"input": 0.00007, "output": 0.00007}
+        }
     },
     # *** MODIFIED OLLAMA ENTRY ***
     "Ollama": {
@@ -249,7 +269,7 @@ RETRIEVER_SEARCH_K = 5
 
 # --- Excel Export Settings ---
 EXCEL_EXPORT_FILENAME = "generated_test_cases.xlsx"
-EXCEL_EXPECTED_COLUMNS = ['Test Case ID', 'FR/BR ID', 'Test Case Name', 'Description', 'Preconditions', 'Test Steps', 'Expected Results', 'Test Data', 'Priority']
+EXCEL_EXPECTED_COLUMNS = ['Test Case ID', 'FR/BR ID', 'Test Case Name', 'Description', 'Preconditions', 'Step #', 'Test Steps', 'Expected Results', 'Test Data', 'Priority']
 EXCEL_MAX_COL_WIDTH = 60
 EXCEL_DEFAULT_COL_WIDTH = 20
 EXCEL_SHEET_NAME_MAX_LEN = 31

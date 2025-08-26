@@ -75,6 +75,8 @@ def init_session_state():
     if 'selected_applications' not in st.session_state: st.session_state.selected_applications = []
     if 'generated_test_cases' not in st.session_state: st.session_state.generated_test_cases = {}
     if 'current_file_identifier' not in st.session_state: st.session_state.current_file_identifier = None
+    if 'generation_cost' not in st.session_state: st.session_state.generation_cost = 0.0
+    if 'token_usage' not in st.session_state: st.session_state.token_usage = {"input": 0, "output": 0}
 
     # *** MODIFIED/NEW State for Context Handling ***
     # Remove or comment out old state
@@ -272,10 +274,10 @@ if current_file:
                         st.session_state.api_credentials, st.session_state.openai_fallback_api_key
                     )
                     if llm:
-                        identified = llm_integration_core.identify_applications(
+                        identified, token_usage = llm_integration_core.identify_applications(
                             st.session_state.extracted_text,
                             llm,
-                            st.session_state.llm_provider # Pass the provider name
+                            st.session_state.llm_provider
                         )
                         st.session_state.identified_applications = identified
                         if identified:
@@ -331,16 +333,19 @@ if current_file:
                         if llm and embeddings:
                             utils.log_message("LLM and Embeddings ready, calling generate_test_cases...", "INFO")
 
-                            results = llm_integration_core.generate_test_cases(
+                            results, token_usage = llm_integration_core.generate_test_cases(
                                 st.session_state.extracted_text,
                                 st.session_state.selected_applications,
-                                st.session_state.uploaded_context_files, # Pass the dict of uploaded file lists
+                                st.session_state.uploaded_context_files,
                                 llm,
                                 embeddings,
-                                st.session_state.llm_provider
+                                st.session_state.llm_provider,
+                                st.session_state.model_name
                             )
 
                             st.session_state.generated_test_cases = results
+                            st.session_state.token_usage = token_usage
+                            st.session_state.generation_cost = token_usage.get('cost', 0.0)
                             utils.log_message(f"Generation process complete. Result keys: {list(results.keys())}", "INFO")
                             if results: st.success("Test case generation process complete. Check results below or logs for details.")
                             else: st.warning("Generation process finished, but no results were returned. Check logs.")

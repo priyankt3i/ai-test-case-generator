@@ -18,6 +18,7 @@ try:
     # Assuming utils.py is in a 'helper' subfolder relative to this file
     # or accessible via PYTHONPATH
     from helper.utils import sanitize_filename, get_available_context_files, log_message # get_available_context_files might only be needed for sidebar now
+    from llm_providers.llm_ollama import get_ollama_models
 except ImportError as e:
     # Basic logging if utils/config import fails
     def log_message(msg, level): print(f"{level}: {msg}")
@@ -69,25 +70,70 @@ def render_llm_config_sidebar():
          return # Stop rendering config if no provider selected/available
 
     provider_config = LLM_PROVIDER_CONFIG[selected_provider]
-    available_models = provider_config.get("models", [])
 
-    # Ensure current model selection is valid for the provider, default if not
-    current_model = st.session_state.get("model_name")
-    if not available_models:
-        st.warning(f"No models listed for {selected_provider} in configuration.")
-        st.session_state.model_name = None
-    # Check if current model is valid *for the selected provider*
-    elif current_model not in available_models:
-        st.session_state.model_name = available_models[0] # Default to first model
+    # Special handling for Ollama to dynamically fetch models
+    if selected_provider == "Ollama":
+        ollama_base_url = st.session_state.api_credentials.get("base_url", "http://localhost:11434").strip()
+        if not ollama_base_url:
+            ollama_base_url = "http://localhost:11434"
 
-    # Render model selection only if models are available
-    if available_models:
-        st.selectbox(
-            f"Select {selected_provider} Model",
-            options=available_models,
-            key="model_name", # Use session state key
-            help=f"Choose a specific model from {selected_provider}."
-        )
+        # Function to fetch and cache models
+        def fetch_and_cache_ollama_models():
+            with st.spinner("Fetching Ollama models..."):
+                models = get_ollama_models(ollama_base_url)
+                st.session_state.ollama_models_list = models
+                if not models:
+                    st.warning(f"Could not fetch models from `{ollama_base_url}`. Is Ollama running?")
+                else:
+                    # If current model is no longer valid, reset it
+                    if st.session_state.get("model_name") not in models:
+                        st.session_state.model_name = models[0] if models else None
+
+        # Button to manually refresh
+        if st.button("🔄 Fetch/Refresh Models", key="ollama_refresh_models_btn"):
+            fetch_and_cache_ollama_models()
+
+        # Fetch models if the list is not in session state
+        if 'ollama_models_list' not in st.session_state:
+            fetch_and_cache_ollama_models()
+        
+        available_models = st.session_state.get('ollama_models_list', [])
+
+        if available_models:
+            st.selectbox(
+                f"Select {selected_provider} Model",
+                options=available_models,
+                key="model_name",
+                help=f"Choose a model from your Ollama server. Use 'Fetch/Refresh' if the list is outdated."
+            )
+        else:
+            st.info("No Ollama models found. Please ensure Ollama is running and models are pulled, then click 'Fetch/Refresh Models'.")
+            st.session_state.model_name = None # Clear model name if none are available
+
+    else: # For all other providers
+        # Clear Ollama cache if switching away
+        if 'ollama_models_list' in st.session_state:
+            del st.session_state.ollama_models_list
+
+        available_models = provider_config.get("models", [])
+        
+        # Ensure current model selection is valid for the provider, default if not
+        current_model = st.session_state.get("model_name")
+        if not available_models:
+            st.warning(f"No models listed for {selected_provider} in configuration.")
+            st.session_state.model_name = None
+        # Check if current model is valid *for the selected provider*
+        elif current_model not in available_models:
+            st.session_state.model_name = available_models[0] # Default to first model
+
+        # Render model selection only if models are available
+        if available_models:
+            st.selectbox(
+                f"Select {selected_provider} Model",
+                options=available_models,
+                key="model_name", # Use session state key
+                help=f"Choose a specific model from {selected_provider}."
+            )
 
     # --- Credentials ---
     st.markdown("**API Credentials**")

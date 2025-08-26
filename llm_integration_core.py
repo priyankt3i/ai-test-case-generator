@@ -2,6 +2,9 @@
 # Main module for LangChain setup, LLM interactions (identification, RAG, refactoring).
 # Imports provider-specific initialization logic from the 'llm_providers' subfolder.
 
+import nest_asyncio
+nest_asyncio.apply()
+
 import streamlit as st
 import yaml
 import os
@@ -20,6 +23,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
+from langchain_core.callbacks import BaseCallbackHandler
 
 # Import config and utilities (adjust path if needed)
 try:
@@ -54,6 +58,21 @@ except ImportError as e:
                 return None
     st.error(f"CRITICAL: Failed to import required modules (config, helper.utils): {e}")
     st.stop()
+
+# --- Custom Callback Handler for Token Usage ---
+class TokenUsageCallback(BaseCallbackHandler):
+    """Callback handler to accumulate token usage."""
+    def __init__(self):
+        super().__init__()
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+
+    def on_llm_end(self, response, **kwargs):
+        """Accumulate token usage from the LLM response."""
+        if response.llm_output and 'token_usage' in response.llm_output:
+            token_usage = response.llm_output['token_usage']
+            self.total_input_tokens += token_usage.get('input_tokens', 0)
+            self.total_output_tokens += token_usage.get('output_tokens', 0)
 
 # --- Provider-Specific Initialization Imports ---
 try:
@@ -308,22 +327,25 @@ def _extract_list_from_llm_output(raw_output: str) -> Optional[str]:
 
 # --- LLM Interaction Functions ---
 
-def identify_applications(text: str, llm: BaseChatModel, provider_name: str) -> List[str]:
+def identify_applications(text: str, llm: BaseChatModel, provider_name: str) -> Tuple[List[str], Dict[str, int]]:
     """
     Identifies application names from text using the provided LLM and provider-specific prompt.
     Includes improved pre-processing to extract list data from potentially messy output before parsing.
+    Returns the list of applications and a dictionary with token usage.
     """
     log_message(f"Starting application identification using provider: {provider_name}...", "INFO")
+    token_usage = {"input": 0, "output": 0}
     if not text or not text.strip():
         log_message("Identification failed: Input text is empty or whitespace.", "ERROR")
         st.error("Cannot identify applications: Input text is empty.")
-        return []
+        return [], token_usage
     if not llm:
         log_message("Identification failed: LLM is not initialized.", "ERROR")
         st.error("Cannot identify applications: LLM is not initialized.")
-        return []
+        return [], token_usage
 
     try:
+        callback = TokenUsageCallback()
         template_key = "IDENTIFY_APP"
         prompt_template_str = get_prompt_template(provider_name, template_key)
         if prompt_template_str.startswith("Error:"): # Check if template fetching failed
@@ -335,7 +357,7 @@ def identify_applications(text: str, llm: BaseChatModel, provider_name: str) -> 
         log_message("Application identification chain created.", "DEBUG")
 
         with st.spinner(f"Asking LLM ({provider_name} / {llm.__class__.__name__}) to identify applications..."):
-            result_str = app_chain.invoke({"text": text})
+            result_str = app_chain.invoke({"text": text}, config={"callbacks": [callback]})
             log_message("LLM invocation for identification complete.", "DEBUG")
             log_message(f"Raw LLM output for identification:\n---\n{result_str}\n---", "DEBUG")
 
@@ -383,13 +405,14 @@ def identify_applications(text: str, llm: BaseChatModel, provider_name: str) -> 
 
         final_apps = sorted(list(set(cleaned_apps)))
         log_message(f"Identification successful. Found apps: {final_apps}", "INFO")
-        return final_apps
+        token_usage = {"input": callback.total_input_tokens, "output": callback.total_output_tokens}
+        return final_apps, token_usage
 
     except Exception as e:
         # *** REMOVED exc_info=True ***
         log_message(f"Exception during application identification: {type(e).__name__} - {e}", "ERROR")
         st.error(f"An error occurred during application identification LLM call: {e}")
-        return []
+        return [], token_usage
 
 
 # --- generate_test_cases Function ---
@@ -399,13 +422,16 @@ def generate_test_cases(
     uploaded_context_files: Dict[str, List[UploadedFile]],
     llm: BaseChatModel,
     embeddings: Embeddings,
-    provider_name: str
-) -> Dict[str, Any]:
+    provider_name: str,
+    model_name: str
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Generates test cases using RAG, incorporating text extracted from uploaded context files.
     """
     log_message(f"--- Entered generate_test_cases using provider: {provider_name} ---", "DEBUG")
     results = {}
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     # --- Initial checks ---
     if not selected_apps:
@@ -548,7 +574,13 @@ def generate_test_cases(
                 # Ensure retrieval_chain is not None before invoking
                 if retrieval_chain is None:
                      raise RuntimeError("RAG chain was not initialized correctly.")
-                response = retrieval_chain.invoke({"input": input_query_string})
+                
+                callback = TokenUsageCallback()
+                response = retrieval_chain.invoke({"input": input_query_string}, config={"callbacks": [callback]})
+                
+                # Accumulate token usage
+                total_input_tokens += callback.total_input_tokens
+                total_output_tokens += callback.total_output_tokens
 
                 log_message(f"App '{app_name}': Received response from retrieval_chain.", "DEBUG")
                 status.write("Received response from LLM.")
@@ -593,7 +625,22 @@ def generate_test_cases(
     # --- Final Steps ---
     progress_bar.empty()
     log_message("--- Finished generate_test_cases ---", "DEBUG")
-    return results
+    
+    # Calculate final cost
+    pricing_info = LLM_PROVIDER_CONFIG.get(provider_name, {}).get("pricing", {}).get(model_name)
+    total_cost = 0.0
+    if pricing_info:
+        input_cost = (total_input_tokens / 1000) * pricing_info["input"]
+        output_cost = (total_output_tokens / 1000) * pricing_info["output"]
+        total_cost = input_cost + output_cost
+
+    token_usage = {
+        "input": total_input_tokens,
+        "output": total_output_tokens,
+        "cost": total_cost
+    }
+    
+    return results, token_usage
 
 # --- refactor_single_test_case Function ---
 def refactor_single_test_case(
