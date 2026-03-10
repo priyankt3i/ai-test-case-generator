@@ -5,3 +5,4 @@ __pycache__/
 __pycache__/config.cpython-312.pyc
 __pycache__/llm_integration.cpython-312.pyc
 __pycache__/config.cpython-312.pyc
+test.py
