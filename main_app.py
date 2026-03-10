@@ -131,7 +131,7 @@ with st.sidebar:
     except FileNotFoundError:
         st.sidebar.error("Logo image not found. Please check the path.")
 
-    st.header("📄 Upload Document")
+    st.header("📄 1.A Upload Document")
     uploaded_files = st.file_uploader(
         "Upload Requirements (.docx, .pdf)",
         type=config.ACCEPTED_FILE_TYPES,
@@ -150,8 +150,8 @@ with st.sidebar:
     ui_components.render_llm_config_sidebar()
     st.divider()
     # Render Context Folder Info (might be less relevant now but kept for info)
-    ui_components.render_context_options_sidebar()
-    st.divider()
+    #ui_components.render_context_options_sidebar()
+    #st.divider()
     st.info("ℹ️ AI results may require review. Always validate generated test cases.")
 
 
@@ -427,7 +427,7 @@ if current_files:
 
                             creds_ok, creds_msg = llm_integration_core.check_credentials(
                                 st.session_state.llm_provider, st.session_state.api_credentials,
-                                st.session_state.openai_fallback_api_key, require_fallback_for_rag=False # RAG not strictly needed for review, but good to check
+                                st.session_state.openai_fallback_api_key, require_fallback_for_rag=True
                             )
                             if not creds_ok:
                                 utils.log_message(f"AI Review failed: Credentials check failed - {creds_msg}", "ERROR")
@@ -438,11 +438,11 @@ if current_files:
                                 st.error(f"Cannot start AI Review: No model selected for {st.session_state.llm_provider}.")
                                 st.session_state.ai_review_inprogress_flag = False
                             else:
-                                llm, _ = llm_integration_core.get_llm_and_embeddings( # We only need LLM for this
+                                llm, embeddings = llm_integration_core.get_llm_and_embeddings(
                                     st.session_state.llm_provider, st.session_state.model_name,
                                     st.session_state.api_credentials, st.session_state.openai_fallback_api_key
                                 )
-                                if llm:
+                                if llm and embeddings:
                                     # Prepare context string
                                     additional_context_str = ""
                                     app_context_files_to_process = st.session_state.uploaded_context_files.get(selected_app_for_review, [])
@@ -464,7 +464,9 @@ if current_files:
                                             additional_context_str=additional_context_str,
                                             existing_test_cases=current_tcs,
                                             llm=llm,
-                                            provider_name=st.session_state.llm_provider
+                                            embeddings=embeddings,
+                                            provider_name=st.session_state.llm_provider,
+                                            app_name=selected_app_for_review
                                         )
                                     st.session_state.ai_review_results_raw = review_output
                                     st.session_state.ai_review_inprogress_flag = False
@@ -492,8 +494,8 @@ if current_files:
                                     st.session_state.ai_review_inprogress_flag = False
                                     st.rerun()
                                 else:
-                                    utils.log_message("AI Review failed: LLM could not be initialized.", "ERROR")
-                                    st.error("AI Review failed: LLM could not be initialized. Check logs.")
+                                    utils.log_message("AI Review failed: LLM/Embeddings could not be initialized.", "ERROR")
+                                    st.error("AI Review failed: LLM/Embeddings could not be initialized (RAG required). Check logs.")
                                     st.session_state.ai_review_inprogress_flag = False
 
                         # --- Display AI Review Results and Handle User Decisions ---
@@ -658,7 +660,7 @@ if current_files:
 
                 creds_ok, creds_msg = llm_integration_core.check_credentials(
                     st.session_state.llm_provider, st.session_state.api_credentials,
-                    st.session_state.openai_fallback_api_key, require_fallback_for_rag=False
+                    st.session_state.openai_fallback_api_key, require_fallback_for_rag=True
                 )
                 if not creds_ok:
                     utils.log_message(f"Single refactor failed: Credentials check failed - {creds_msg}", "ERROR")
@@ -667,16 +669,29 @@ if current_files:
                     utils.log_message(f"Single refactor failed: No model selected for {st.session_state.llm_provider}.", "ERROR")
                     st.error(f"Cannot refactor: No model selected for {st.session_state.llm_provider}.")
                 else:
-                    llm, _ = llm_integration_core.get_llm_and_embeddings(
+                    llm, embeddings = llm_integration_core.get_llm_and_embeddings(
                         st.session_state.llm_provider, st.session_state.model_name,
                         st.session_state.api_credentials, st.session_state.openai_fallback_api_key
                     )
-                    if llm:
+                    if llm and embeddings:
+                        additional_context_str = ""
+                        app_context_files_to_process = st.session_state.uploaded_context_files.get(req['app_name'], [])
+                        if app_context_files_to_process:
+                            for uploaded_file in app_context_files_to_process:
+                                try:
+                                    extracted_content = file_processing.extract_text_from_file(uploaded_file)
+                                    if extracted_content:
+                                        additional_context_str += f"\n\n--- Context from {uploaded_file.name} ---\n{extracted_content}\n--- End Context ---\n"
+                                except Exception as e:
+                                    utils.log_message(f"Error processing context file {uploaded_file.name} for single refactor: {e}", "WARNING")
+
                         with st.spinner(f"Refactoring Test Case '{req['tc_id']}'..."):
                             refactored_data = llm_integration_core.refactor_single_test_case(
                                 req['app_name'], req['tc_id'], req['instructions'],
-                                req['original_data'], llm,
-                                st.session_state.llm_provider # Pass the provider name
+                                req['original_data'], llm, embeddings,
+                                st.session_state.llm_provider,
+                                st.session_state.extracted_text,
+                                additional_context_str
                             )
                         if refactored_data:
                             st.session_state.modification_app_name = req['app_name']
@@ -694,8 +709,8 @@ if current_files:
                             st.session_state.proposed_modification_data = None
                             st.session_state.original_tc_data_for_diff = None
                     else:
-                        utils.log_message("Single refactor failed: LLM could not be initialized.", "ERROR")
-                        st.error("Refactoring failed: LLM could not be initialized. Check logs.")
+                        utils.log_message("Single refactor failed: LLM/Embeddings could not be initialized.", "ERROR")
+                        st.error("Refactoring failed: LLM/Embeddings could not be initialized (RAG required). Check logs.")
                 st.rerun() # Rerun after processing single request
 
             # Check for bulk refactor request
@@ -713,7 +728,7 @@ if current_files:
 
                 creds_ok, creds_msg = llm_integration_core.check_credentials(
                     st.session_state.llm_provider, st.session_state.api_credentials,
-                    st.session_state.openai_fallback_api_key, require_fallback_for_rag=False # RAG not needed
+                    st.session_state.openai_fallback_api_key, require_fallback_for_rag=True
                 )
                 if not creds_ok:
                     utils.log_message(f"Bulk refactor failed: Credentials check failed - {creds_msg}", "ERROR")
@@ -724,11 +739,22 @@ if current_files:
                     st.error(f"Cannot refactor: No model selected for {st.session_state.llm_provider}.")
                     # Keep request in state
                 else:
-                    llm, _ = llm_integration_core.get_llm_and_embeddings(
+                    llm, embeddings = llm_integration_core.get_llm_and_embeddings(
                         st.session_state.llm_provider, st.session_state.model_name,
                         st.session_state.api_credentials, st.session_state.openai_fallback_api_key
                     )
-                    if llm:
+                    if llm and embeddings:
+                        additional_context_str = ""
+                        app_context_files_to_process = st.session_state.uploaded_context_files.get(req['app_name'], [])
+                        if app_context_files_to_process:
+                            for uploaded_file in app_context_files_to_process:
+                                try:
+                                    extracted_content = file_processing.extract_text_from_file(uploaded_file)
+                                    if extracted_content:
+                                        additional_context_str += f"\n\n--- Context from {uploaded_file.name} ---\n{extracted_content}\n--- End Context ---\n"
+                                except Exception as e:
+                                    utils.log_message(f"Error processing context file {uploaded_file.name} for bulk refactor: {e}", "WARNING")
+
                         with st.spinner(f"Refactoring all test cases for '{req['app_name']}'..."):
                             # *** Call the NEW bulk refactoring function ***
                             # Ensure the function exists in llm_integration_core
@@ -737,7 +763,10 @@ if current_files:
                                     req['app_name'], req['instructions'],
                                     req['original_data'], # Pass the list of original cases
                                     llm,
-                                    st.session_state.llm_provider # Pass the provider name
+                                    embeddings,
+                                    st.session_state.llm_provider,
+                                    st.session_state.extracted_text,
+                                    additional_context_str
                                 )
                             else:
                                 utils.log_message("Bulk refactor failed: `refactor_all_test_cases` function not found in llm_integration_core.py.", "ERROR")
@@ -754,8 +783,8 @@ if current_files:
                             st.error("Refactoring failed. LLM did not return a valid list of test cases or function missing. Check logs.")
                             # Keep request in state for confirmation UI
                     else:
-                        utils.log_message("Bulk refactor failed: LLM could not be initialized.", "ERROR")
-                        st.error("Refactoring failed: LLM could not be initialized. Check logs.")
+                        utils.log_message("Bulk refactor failed: LLM/Embeddings could not be initialized.", "ERROR")
+                        st.error("Refactoring failed: LLM/Embeddings could not be initialized (RAG required). Check logs.")
                         # Keep request in state for confirmation UI
 
                 # REMOVED: st.session_state.refactor_all_request = req (State persists naturally)

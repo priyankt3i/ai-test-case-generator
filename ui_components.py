@@ -226,7 +226,7 @@ def _fetch_provider_models(provider: str, credentials: Dict[str, str]) -> tuple[
 
 def render_llm_config_sidebar():
     """Renders the LLM Provider and Credential configuration in the sidebar."""
-    st.header("LLM Configuration")
+    st.header("1.B LLM Configuration")
 
     provider_options = list(LLM_PROVIDER_CONFIG.keys())
     if 'llm_provider' not in st.session_state or st.session_state.llm_provider not in provider_options:

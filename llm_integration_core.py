@@ -9,6 +9,7 @@ import streamlit as st
 import yaml
 import os
 import json
+import hashlib
 import re # Import regex module
 import ast # For literal_eval fallback in parsing
 from typing import Dict, Any, Tuple, List, Optional
@@ -325,6 +326,152 @@ def _extract_list_from_llm_output(raw_output: str) -> Optional[str]:
     return None
 
 
+# --- RAG / Traceability Helpers ---
+TRACEABILITY_EXCERPT_FIELD = "source_requirement_excerpt"
+TRACEABILITY_CHUNK_FIELD = "source_chunk_id"
+
+
+def _safe_excerpt(text: str, max_len: int = 240) -> str:
+    """Returns a compact single-line excerpt for traceability fields."""
+    if not text:
+        return ""
+    compact = " ".join(str(text).split())
+    return compact[:max_len]
+
+
+def _get_embeddings_signature(embeddings: Embeddings) -> str:
+    """Builds a stable-ish signature string for embedding cache keys."""
+    class_name = embeddings.__class__.__name__
+    model_name = getattr(embeddings, "model", None) or getattr(embeddings, "model_name", None) or "unknown_model"
+    base_url = getattr(embeddings, "base_url", "") or ""
+    return f"{class_name}:{model_name}:{base_url}"
+
+
+def _compute_rag_cache_key(source_text: str, embeddings: Embeddings) -> str:
+    """Computes the cache key for requirement vectorstore reuse."""
+    text_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+    emb_sig = _get_embeddings_signature(embeddings)
+    return f"{text_hash}:{emb_sig}:{CHUNK_SIZE}:{CHUNK_OVERLAP}"
+
+
+def _get_or_create_requirement_vectorstore(source_text: str, embeddings: Embeddings) -> FAISS:
+    """
+    Reuses a session-cached FAISS index for the same source text + embeddings signature.
+    Creates and caches one when not present.
+    """
+    if not source_text or not source_text.strip():
+        raise ValueError("Cannot build vectorstore: source requirements text is empty.")
+    if not embeddings:
+        raise ValueError("Cannot build vectorstore: embeddings instance is missing.")
+
+    cache = st.session_state.setdefault("rag_vectorstore_cache", {})
+    cache_key = _compute_rag_cache_key(source_text, embeddings)
+
+    cached_entry = cache.get(cache_key)
+    if cached_entry and isinstance(cached_entry.get("vectorstore"), FAISS):
+        log_message(f"RAG cache hit for key: {cache_key[:16]}...", "DEBUG")
+        return cached_entry["vectorstore"]
+
+    log_message(f"RAG cache miss. Building vectorstore for key: {cache_key[:16]}...", "INFO")
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+    splits = text_splitter.split_text(source_text)
+    if not splits:
+        raise ValueError("Text splitting resulted in zero chunks.")
+
+    chunked_texts = []
+    chunked_metadatas = []
+    for idx, chunk_text in enumerate(splits, start=1):
+        chunk_id = f"CHUNK_{idx:04d}"
+        chunked_texts.append(f"[{chunk_id}]\n{chunk_text}")
+        chunked_metadatas.append({
+            "chunk_id": chunk_id,
+            "chunk_excerpt": _safe_excerpt(chunk_text, max_len=320)
+        })
+
+    vectorstore = FAISS.from_texts(texts=chunked_texts, embedding=embeddings, metadatas=chunked_metadatas)
+    cache[cache_key] = {"vectorstore": vectorstore}
+    st.session_state["rag_vectorstore_cache"] = cache
+    log_message(f"RAG vectorstore built and cached with {len(splits)} chunks.", "INFO")
+    return vectorstore
+
+
+def _extract_traceability_refs_from_docs(docs: List[Any]) -> List[Dict[str, str]]:
+    """Extracts traceability refs (chunk id + excerpt) from retrieved documents."""
+    refs: List[Dict[str, str]] = []
+    for doc in docs or []:
+        metadata = getattr(doc, "metadata", {}) or {}
+        chunk_id = metadata.get("chunk_id", "")
+        chunk_excerpt = metadata.get("chunk_excerpt", "")
+        content = getattr(doc, "page_content", "") or ""
+        if not chunk_excerpt and content:
+            # Remove prefixed chunk marker if present.
+            chunk_excerpt = re.sub(r"^\[CHUNK_\d+\]\s*", "", content).strip()
+        refs.append({
+            "chunk_id": chunk_id,
+            "excerpt": _safe_excerpt(chunk_excerpt, max_len=260)
+        })
+    return refs
+
+
+def _format_retrieved_docs_for_prompt(docs: List[Any]) -> str:
+    """Formats retrieved docs into a compact, chunk-labeled prompt context."""
+    if not docs:
+        return ""
+
+    formatted_parts = []
+    for doc in docs:
+        metadata = getattr(doc, "metadata", {}) or {}
+        chunk_id = metadata.get("chunk_id", "CHUNK_UNKNOWN")
+        content = getattr(doc, "page_content", "") or ""
+        # Keep chunk marker from page_content if present; otherwise add one.
+        if not content.startswith("[CHUNK_"):
+            content = f"[{chunk_id}]\n{content}"
+        formatted_parts.append(content)
+
+    return "\n\n".join(formatted_parts)
+
+
+def _default_traceability_from_refs(refs: List[Dict[str, str]]) -> Dict[str, str]:
+    """Builds fallback traceability values from retrieved refs."""
+    if not refs:
+        return {TRACEABILITY_CHUNK_FIELD: "", TRACEABILITY_EXCERPT_FIELD: ""}
+
+    chunk_ids = [r.get("chunk_id", "") for r in refs if r.get("chunk_id")]
+    chunk_id_value = ",".join(chunk_ids[:3]) if chunk_ids else ""
+    excerpt_value = refs[0].get("excerpt", "") if refs else ""
+    return {
+        TRACEABILITY_CHUNK_FIELD: chunk_id_value,
+        TRACEABILITY_EXCERPT_FIELD: excerpt_value
+    }
+
+
+def _normalize_test_case_schema(tc_data: Dict[str, Any], fallback_trace: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Ensures expected schema + traceability fields exist on a test case object."""
+    normalized = dict(tc_data or {})
+
+    for col in EXCEL_EXPECTED_COLUMNS:
+        if col not in normalized:
+            normalized[col] = [] if col in ["Test Steps", "Expected Results"] else ""
+
+    # Keep list shape for common list fields.
+    for col in ["Test Steps", "Expected Results"]:
+        value = normalized.get(col)
+        if value is None:
+            normalized[col] = []
+        elif isinstance(value, str):
+            normalized[col] = [value] if value.strip() else []
+        elif not isinstance(value, list):
+            normalized[col] = [str(value)]
+
+    fallback_trace = fallback_trace or {}
+    if not normalized.get(TRACEABILITY_CHUNK_FIELD):
+        normalized[TRACEABILITY_CHUNK_FIELD] = fallback_trace.get(TRACEABILITY_CHUNK_FIELD, "")
+    if not normalized.get(TRACEABILITY_EXCERPT_FIELD):
+        normalized[TRACEABILITY_EXCERPT_FIELD] = fallback_trace.get(TRACEABILITY_EXCERPT_FIELD, "")
+    normalized[TRACEABILITY_EXCERPT_FIELD] = _safe_excerpt(str(normalized.get(TRACEABILITY_EXCERPT_FIELD, "")), max_len=320)
+    return normalized
+
+
 # --- LLM Interaction Functions ---
 
 def identify_applications(text: str, llm: BaseChatModel, provider_name: str) -> Tuple[List[str], Dict[str, int]]:
@@ -350,7 +497,7 @@ def identify_applications(text: str, llm: BaseChatModel, provider_name: str) -> 
         prompt_template_str = get_prompt_template(provider_name, template_key)
         if prompt_template_str.startswith("Error:"): # Check if template fetching failed
              st.error(prompt_template_str)
-             return []
+             return [], token_usage
         app_prompt = ChatPromptTemplate.from_template(prompt_template_str)
         log_message(f"Using prompt for app identification:\n{prompt_template_str}", "DEBUG")
         app_chain = app_prompt | llm | StrOutputParser()
@@ -360,11 +507,12 @@ def identify_applications(text: str, llm: BaseChatModel, provider_name: str) -> 
             result_str = app_chain.invoke({"text": text}, config={"callbacks": [callback]})
             log_message("LLM invocation for identification complete.", "DEBUG")
             log_message(f"Raw LLM output for identification:\n---\n{result_str}\n---", "DEBUG")
+        token_usage = {"input": callback.total_input_tokens, "output": callback.total_output_tokens}
 
         if not result_str or not result_str.strip():
             log_message("LLM returned empty response for identification.", "WARNING")
             st.warning("LLM returned an empty response. Could not identify applications.")
-            return []
+            return [], token_usage
 
         extracted_list_str = _extract_list_from_llm_output(result_str)
 
@@ -387,25 +535,24 @@ def identify_applications(text: str, llm: BaseChatModel, provider_name: str) -> 
                     st.info("LLM output wasn't structured, attempting basic comma parsing.")
                     final_apps = sorted(list(set(app for app in possible_apps if app)))
                     log_message(f"Identification successful via fallback comma parsing. Found apps: {final_apps}", "INFO")
-                    return final_apps
+                    return final_apps, token_usage
                 else:
                     log_message("Comma fallback attempted but yielded no apps.", "WARNING")
             else:
                  log_message("Skipping comma fallback as primary parsing failed or string looked like JSON/list.", "DEBUG")
 
             st.error("Could not reliably identify applications from the LLM response format. Please check the raw response in the logs.")
-            return []
+            return [], token_usage
 
         cleaned_apps = [str(app).strip() for app in parsed_apps if isinstance(app, (str, int, float)) and str(app).strip()]
 
         if not cleaned_apps:
             log_message("Parsed list was empty or contained only non-string/empty items.", "WARNING")
             st.warning("LLM identified an empty list of applications.")
-            return []
+            return [], token_usage
 
         final_apps = sorted(list(set(cleaned_apps)))
         log_message(f"Identification successful. Found apps: {final_apps}", "INFO")
-        token_usage = {"input": callback.total_input_tokens, "output": callback.total_output_tokens}
         return final_apps, token_usage
 
     except Exception as e:
@@ -429,105 +576,92 @@ def generate_test_cases(
     Generates test cases using RAG, incorporating text extracted from uploaded context files.
     """
     log_message(f"--- Entered generate_test_cases using provider: {provider_name} ---", "DEBUG")
-    results = {}
+    results: Dict[str, Any] = {}
     total_input_tokens = 0
     total_output_tokens = 0
+    token_usage = {"input": 0, "output": 0, "cost": 0.0}
 
     # --- Initial checks ---
     if not selected_apps:
         log_message("Generate skipped: No applications selected.", "WARNING")
-        return results
+        return results, token_usage
     if not text or not text.strip():
         log_message("Generate failed: Source text is empty.", "ERROR")
-        return {app: "Error: Source text is empty." for app in selected_apps}
+        return ({app: "Error: Source text is empty." for app in selected_apps}, token_usage)
     if not llm:
         log_message("Generate failed: LLM is not initialized.", "ERROR")
-        return {app: "Error: LLM not initialized." for app in selected_apps}
+        return ({app: "Error: LLM not initialized." for app in selected_apps}, token_usage)
     if not embeddings:
         log_message("Generate failed: Embeddings are not initialized (required for RAG).", "ERROR")
-        return {app: "Error: Embeddings not initialized (required for RAG)." for app in selected_apps}
+        return ({app: "Error: Embeddings not initialized (required for RAG)." for app in selected_apps}, token_usage)
 
-    # Define FILE_PROCESSING_AVAILABLE based on the availability of file processing functionality
     try:
         from helper.file_processing import extract_text_from_file
-        FILE_PROCESSING_AVAILABLE = True
+        file_processing_available = True
     except ImportError:
-        FILE_PROCESSING_AVAILABLE = False
+        file_processing_available = False
 
-    # *** MOVED CHECK: Check for file processing availability AFTER the try-except block ***
-    if not FILE_PROCESSING_AVAILABLE:
+    if not file_processing_available:
         log_message("File processing functions not available. Cannot process uploaded context.", "ERROR")
         st.error("Internal Error: File processing functions are missing.")
-        return {app: "Error: File processing module unavailable." for app in selected_apps}
+        return ({app: "Error: File processing module unavailable." for app in selected_apps}, token_usage)
 
-
-    # --- Vector Store Creation ---
     vectorstore = None
     try:
-        log_message("Creating vector store from text...", "DEBUG")
-        from langchain.text_splitter import RecursiveCharacterTextSplitter # Example import
-        from langchain_community.vectorstores import FAISS # Example import
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP) # Use config values
-        splits = text_splitter.split_text(text)
-        if not splits: raise ValueError("Text splitting resulted in zero chunks.")
-        vectorstore = FAISS.from_texts(texts=splits, embedding=embeddings)
-        if vectorstore is None: raise ValueError("Vector store creation failed (remained None).")
-        log_message("--- Vector Store Creation Succeeded ---", "INFO")
+        log_message("Preparing requirement vectorstore using cache...", "DEBUG")
+        vectorstore = _get_or_create_requirement_vectorstore(text, embeddings)
+        if vectorstore is None:
+            raise ValueError("Vector store creation failed (remained None).")
+        log_message("--- Requirement vectorstore ready ---", "INFO")
     except Exception as e:
-        # *** REMOVED exc_info=True ***
         log_message(f"--- Exception during Vector Store Creation: {type(e).__name__} - {e} ---", "ERROR")
         st.error(f"Error creating vector store/embeddings: {e}.")
-        return {app: f"Error creating embeddings/vector store: {e}" for app in selected_apps}
+        return ({app: f"Error creating embeddings/vector store: {e}" for app in selected_apps}, token_usage)
 
-
-    # --- RAG Chain Setup ---
     retrieval_chain = None
     try:
-        # Placeholder: Replace with your actual RAG chain setup logic
-        # Ensure this part is correctly implemented in your version
-        from langchain.chains.combine_documents import create_stuff_documents_chain # Example import
-        from langchain.chains import create_retrieval_chain # Example import
-        from langchain_core.prompts import ChatPromptTemplate # Example import
-        retriever = vectorstore.as_retriever(search_kwargs={"k": RETRIEVER_SEARCH_K}) # Use config value
+        retriever = vectorstore.as_retriever(search_kwargs={"k": RETRIEVER_SEARCH_K})
         template_key = "GENERATE_TC"
         prompt_template_str = get_prompt_template(provider_name, template_key)
-        if prompt_template_str.startswith("Error:"): # Check if template fetching failed
-             raise ValueError(prompt_template_str)
-        # Format prompt (ensure EXCEL_EXPECTED_COLUMNS is available)
+        if prompt_template_str.startswith("Error:"):
+            raise ValueError(prompt_template_str)
+
         if not isinstance(EXCEL_EXPECTED_COLUMNS, list) or not EXCEL_EXPECTED_COLUMNS:
-             raise ValueError("EXCEL_EXPECTED_COLUMNS not defined correctly in config.")
+            raise ValueError("EXCEL_EXPECTED_COLUMNS not defined correctly in config.")
+
         tc_fields = ", ".join([f"`{col}`" for col in EXCEL_EXPECTED_COLUMNS])
-        formatted_prompt_str = prompt_template_str.format(field_names=tc_fields, context="{context}", input="{input}") 
+        formatted_prompt_str = prompt_template_str.format(
+            field_names=tc_fields,
+            context="{context}",
+            input="{input}"
+        )
         test_case_prompt = ChatPromptTemplate.from_template(formatted_prompt_str)
         document_chain = create_stuff_documents_chain(llm, test_case_prompt)
         retrieval_chain = create_retrieval_chain(retriever, document_chain)
-        # End Placeholder
-        if retrieval_chain is None: raise ValueError("RAG chain setup failed (remained None).")
-        log_message("create_retrieval_chain Succeeded. RAG setup complete.", "INFO")
+        if retrieval_chain is None:
+            raise ValueError("RAG chain setup failed (remained None).")
+        log_message("create_retrieval_chain succeeded. RAG setup complete.", "INFO")
     except Exception as e:
-        # *** REMOVED exc_info=True ***
         log_message(f"--- Exception during RAG Chain Setup: {type(e).__name__} - {e} ---", "ERROR")
         st.error(f"Fatal error setting up RAG chain components: {e}")
         error_message_for_results = f"Error setting up RAG chain: {e}"
         for app in selected_apps:
-             if app not in results: results[app] = error_message_for_results
-        return results
+            if app not in results:
+                results[app] = error_message_for_results
+        return results, token_usage
 
-
-    # --- Generation Loop ---
     total_selected_apps = len(selected_apps)
     log_message(f"Starting generation loop for {total_selected_apps} selected apps.", "INFO")
     progress_bar = st.progress(0.0, text="Initializing test case generation...")
 
     for i, app_name in enumerate(selected_apps):
-        log_message(f"Processing app {i+1}/{total_selected_apps}: {app_name}", "INFO")
+        log_message(f"Processing app {i + 1}/{total_selected_apps}: {app_name}", "INFO")
         progress_value = (i + 1) / total_selected_apps
-        progress_text = f"Generating for '{app_name}' ({i+1}/{total_selected_apps})..."
+        progress_text = f"Generating for '{app_name}' ({i + 1}/{total_selected_apps})..."
         progress_bar.progress(progress_value, text=progress_text)
 
         with st.status(f"Processing '{app_name}'...", expanded=False) as status:
             try:
-                # *** NEW CONTEXT PROCESSING LOGIC ***
                 additional_context_str = ""
                 files_for_app = uploaded_context_files.get(app_name, [])
                 log_message(f"App '{app_name}': Found {len(files_for_app)} uploaded context files.", "DEBUG")
@@ -541,92 +675,113 @@ def generate_test_cases(
 
                         try:
                             status.write(f"- Reading `{uploaded_file.name}`...")
-                            log_message(f"App '{app_name}': Extracting context from '{uploaded_file.name}' (type: {getattr(uploaded_file, 'type', 'N/A')}, size: {getattr(uploaded_file, 'size', 'N/A')})", "DEBUG")
-                            extracted_text = extract_text_from_file(uploaded_file) # Assumes imported correctly
+                            log_message(
+                                f"App '{app_name}': Extracting context from '{uploaded_file.name}' "
+                                f"(type: {getattr(uploaded_file, 'type', 'N/A')}, size: {getattr(uploaded_file, 'size', 'N/A')})",
+                                "DEBUG"
+                            )
+                            extracted_text = extract_text_from_file(uploaded_file)
 
                             if extracted_text:
-                                additional_context_str += f"\n\n--- Context from {uploaded_file.name} ---\n{extracted_text}\n--- End Context ---\n"
-                                log_message(f"App '{app_name}': Successfully extracted and appended context from '{uploaded_file.name}'.", "DEBUG")
+                                additional_context_str += (
+                                    f"\n\n--- Context from {uploaded_file.name} ---\n"
+                                    f"{extracted_text}\n--- End Context ---\n"
+                                )
+                                log_message(
+                                    f"App '{app_name}': Successfully extracted and appended context from '{uploaded_file.name}'.",
+                                    "DEBUG"
+                                )
                             else:
                                 log_message(f"App '{app_name}': No text content extracted from '{uploaded_file.name}'.", "WARNING")
                                 status.warning(f"No text content extracted from `{uploaded_file.name}`.")
 
                         except Exception as extract_err:
-                            # *** REMOVED exc_info=True ***
-                            log_message(f"App '{app_name}': Failed to process context file '{uploaded_file.name}': {extract_err}", "ERROR")
-                            status.warning(f"⚠️ Error reading context file `{uploaded_file.name}`: {extract_err}")
-
+                            log_message(
+                                f"App '{app_name}': Failed to process context file '{uploaded_file.name}': {extract_err}",
+                                "ERROR"
+                            )
+                            status.warning(f"Error reading context file `{uploaded_file.name}`: {extract_err}")
                 else:
-                     status.write("No context files uploaded for this app.")
-                # *** END NEW CONTEXT PROCESSING LOGIC ***
+                    status.write("No context files uploaded for this app.")
 
-                # --- Prepare Input and Invoke Chain ---
-                input_query_string = f"Generate detailed test cases specifically for the application or system named: '{app_name}'. " \
-                                     f"Use the retrieved requirements context below and the additional context provided (if any) to inform the test cases. " \
-                                     f"Focus on requirements relevant to '{app_name}'." \
-                                     f"{additional_context_str}"
+                input_query_string = (
+                    f"Generate detailed test cases specifically for the application or system named: '{app_name}'. "
+                    f"Use the retrieved requirements context below and the additional context provided (if any) to inform the test cases. "
+                    f"Focus on requirements relevant to '{app_name}'. "
+                    f"For every case, include source_chunk_id and source_requirement_excerpt from retrieved context. "
+                    f"{additional_context_str}"
+                )
 
                 log_message(f"App '{app_name}': Prepared input query for RAG chain.", "DEBUG")
-
                 status.write("Invoking RAG chain with LLM...")
-                log_message(f"App '{app_name}': Invoking retrieval_chain...", "DEBUG")
 
-                # Ensure retrieval_chain is not None before invoking
                 if retrieval_chain is None:
-                     raise RuntimeError("RAG chain was not initialized correctly.")
-                
+                    raise RuntimeError("RAG chain was not initialized correctly.")
+
                 callback = TokenUsageCallback()
                 response = retrieval_chain.invoke({"input": input_query_string}, config={"callbacks": [callback]})
-                
-                # Accumulate token usage
+
                 total_input_tokens += callback.total_input_tokens
                 total_output_tokens += callback.total_output_tokens
 
                 log_message(f"App '{app_name}': Received response from retrieval_chain.", "DEBUG")
                 status.write("Received response from LLM.")
 
-                # --- Process Response ---
-                # *** REMOVED local try-except for parse_json_output import ***
-                # Assumes parse_json_output is available from top-level import or fallback
+                retrieved_docs = response.get("context", []) if isinstance(response, dict) else []
+                traceability_refs = _extract_traceability_refs_from_docs(retrieved_docs)
+                fallback_trace = _default_traceability_from_refs(traceability_refs)
 
-                if isinstance(response, dict) and "answer" in response and response["answer"] and isinstance(response["answer"], str):
+                if isinstance(response, dict) and isinstance(response.get("answer"), str) and response.get("answer").strip():
                     answer_str = response["answer"].strip()
                     log_message(f"App '{app_name}': Extracted 'answer' string. Length: {len(answer_str)}", "DEBUG")
 
                     parsed_cases = parse_json_output(answer_str, expected_type=list)
-
                     if parsed_cases is not None and isinstance(parsed_cases, list):
-                         valid_cases = [item for item in parsed_cases if isinstance(item, dict)]
-                         log_message(f"App '{app_name}': Parsed {len(parsed_cases)} items, filtered to {len(valid_cases)} valid dicts.", "DEBUG")
-                         if valid_cases:
-                              results[app_name] = valid_cases
-                              log_message(f"App '{app_name}': Successfully extracted {len(valid_cases)} valid test cases.", "INFO")
-                              status.update(label=f"✓ Generated {len(valid_cases)} cases for '{app_name}'", state="complete", expanded=False)
-                         else:
-                              results[app_name] = "Warning: LLM response parsed as a list, but contained no valid test case objects (dictionaries)."
-                              log_message(f"App '{app_name}': Parsed list contained no valid dictionary items.", "WARNING")
-                              status.update(label=f"⚠️ No Valid Cases Found for '{app_name}'", state="warning", expanded=True)
+                        valid_cases = [
+                            _normalize_test_case_schema(item, fallback_trace=fallback_trace)
+                            for item in parsed_cases if isinstance(item, dict)
+                        ]
+                        log_message(
+                            f"App '{app_name}': Parsed {len(parsed_cases)} items, filtered to {len(valid_cases)} valid dicts.",
+                            "DEBUG"
+                        )
+                        if valid_cases:
+                            results[app_name] = valid_cases
+                            log_message(
+                                f"App '{app_name}': Successfully extracted {len(valid_cases)} valid test cases.",
+                                "INFO"
+                            )
+                            status.update(label=f"Generated {len(valid_cases)} cases for '{app_name}'", state="complete", expanded=False)
+                        else:
+                            results[app_name] = (
+                                "Warning: LLM response parsed as a list, but contained no valid test case objects (dictionaries)."
+                            )
+                            log_message(
+                                f"App '{app_name}': Parsed list contained no valid dictionary items.",
+                                "WARNING"
+                            )
+                            status.update(label=f"No valid cases found for '{app_name}'", state="warning", expanded=True)
                     else:
-                         results[app_name] = "Error: Failed to parse JSON list of test cases from LLM response."
-                         log_message(f"App '{app_name}': Failed to parse JSON list from answer string.", "ERROR")
-                         status.update(label=f"⚠️ JSON Parse Error for '{app_name}'", state="error", expanded=True)
+                        results[app_name] = "Error: Failed to parse JSON list of test cases from LLM response."
+                        log_message(f"App '{app_name}': Failed to parse JSON list from answer string.", "ERROR")
+                        status.update(label=f"JSON parse error for '{app_name}'", state="error", expanded=True)
                 else:
                     results[app_name] = "Error: LLM provided no answer or the response structure was unexpected."
-                    log_message(f"App '{app_name}': No 'answer' key in response or response structure invalid. Response type: {type(response)}", "ERROR")
-                    status.update(label=f"⚠️ No Answer/Bad Format for '{app_name}'", state="error", expanded=True)
+                    log_message(
+                        f"App '{app_name}': No 'answer' key in response or response structure invalid. Response type: {type(response)}",
+                        "ERROR"
+                    )
+                    status.update(label=f"No answer/bad format for '{app_name}'", state="error", expanded=True)
 
             except Exception as e:
-                # *** REMOVED exc_info=True ***
                 log_message(f"--- Exception during Generation Loop for '{app_name}': {type(e).__name__} - {e} ---", "ERROR")
                 st.error(f"An error occurred during generation for '{app_name}': {e}")
                 results[app_name] = f"Error: Generation failed - {e}"
-                status.update(label=f"❌ Failed generation for '{app_name}'", state="error", expanded=True)
+                status.update(label=f"Failed generation for '{app_name}'", state="error", expanded=True)
 
-    # --- Final Steps ---
     progress_bar.empty()
     log_message("--- Finished generate_test_cases ---", "DEBUG")
-    
-    # Calculate final cost
+
     pricing_info = LLM_PROVIDER_CONFIG.get(provider_name, {}).get("pricing", {}).get(model_name)
     total_cost = 0.0
     if pricing_info:
@@ -639,9 +794,8 @@ def generate_test_cases(
         "output": total_output_tokens,
         "cost": total_cost
     }
-    
-    return results, token_usage
 
+    return results, token_usage
 # --- refactor_single_test_case Function ---
 def refactor_single_test_case(
     app_name: str,
@@ -649,18 +803,28 @@ def refactor_single_test_case(
     instructions: str,
     original_tc_data: Dict,
     llm: BaseChatModel,
-    provider_name: str
+    embeddings: Embeddings,
+    provider_name: str,
+    requirements_text: str,
+    additional_context_str: str = ""
 ) -> Optional[Dict]:
     """
-    Uses the LLM to refactor a single test case based on user instructions
-    and a provider-specific prompt. Expects the LLM to return a JSON object
-    representing the updated test case.
+    Uses RAG + LLM to refactor a single test case based on user instructions.
+    The response must be a JSON object representing the updated test case.
     """
     log_message(f"Starting refactor for TC '{tc_id}' in app '{app_name}' using provider {provider_name}...", "INFO")
 
     if not llm:
         st.error("Cannot refactor: LLM is not initialized.")
         log_message("Refactor failed: LLM not initialized.", "ERROR")
+        return None
+    if not embeddings:
+        st.error("Cannot refactor: Embeddings are not initialized (required for RAG).")
+        log_message("Refactor failed: Embeddings not initialized.", "ERROR")
+        return None
+    if not requirements_text or not requirements_text.strip():
+        st.error("Cannot refactor: Requirements text is empty.")
+        log_message("Refactor failed: Requirements text empty.", "ERROR")
         return None
     if not original_tc_data or not isinstance(original_tc_data, dict):
         st.error(f"Cannot refactor: Invalid original test case data provided for TC ID '{tc_id}'. Expected a dictionary.")
@@ -672,83 +836,92 @@ def refactor_single_test_case(
         return None
 
     try:
-        try:
-            original_json_str = json.dumps(original_tc_data, separators=(',', ':'))
-        except TypeError as te:
-            log_message(f"Refactor failed for TC '{tc_id}': Could not serialize original data to JSON: {te}", "ERROR")
-            st.error(f"Error preparing original test case '{tc_id}' for refactoring: Could not convert data to JSON. {te}")
-            return None
+        original_json_str = json.dumps(original_tc_data, separators=(',', ':'))
+    except TypeError as te:
+        log_message(f"Refactor failed for TC '{tc_id}': Could not serialize original data to JSON: {te}", "ERROR")
+        st.error(f"Error preparing original test case '{tc_id}' for refactoring: Could not convert data to JSON. {te}")
+        return None
+
+    try:
+        vectorstore = _get_or_create_requirement_vectorstore(requirements_text, embeddings)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": RETRIEVER_SEARCH_K})
+        retrieval_query = (
+            f"Application: {app_name}. Test Case ID: {tc_id}. "
+            f"Current Test Case Name: {original_tc_data.get('Test Case Name', '')}. "
+            f"Refactor Instructions: {instructions}."
+        )
+        retrieved_docs = retriever.invoke(retrieval_query)
+        traceability_refs = _extract_traceability_refs_from_docs(retrieved_docs)
+        fallback_trace = _default_traceability_from_refs(traceability_refs)
+        requirements_context_retrieved = _format_retrieved_docs_for_prompt(retrieved_docs)
+
+        if additional_context_str and additional_context_str.strip():
+            requirements_context_retrieved = (
+                f"{requirements_context_retrieved}\n\n[ADDITIONAL_CONTEXT]\n{additional_context_str.strip()}"
+            )
 
         template_key = "REFACTOR_TC"
         prompt_template_str = get_prompt_template(provider_name, template_key)
-        if prompt_template_str.startswith("Error:"): # Check if template fetching failed
-             st.error(prompt_template_str)
-             return None
+        if prompt_template_str.startswith("Error:"):
+            st.error(prompt_template_str)
+            return None
+
         prompt = ChatPromptTemplate.from_template(prompt_template_str)
-        log_message(f"Using prompt for refactoring TC '{tc_id}':\n{prompt_template_str}", "DEBUG")
         chain = prompt | llm | StrOutputParser()
-        log_message(f"Refactor chain created for TC '{tc_id}'.", "DEBUG")
 
         with st.spinner(f"Asking LLM ({provider_name}) to refactor Test Case '{tc_id}'..."):
-            log_message(f"Invoking refactor chain for TC '{tc_id}'...", "DEBUG")
             response_str = chain.invoke({
                 "tc_id": tc_id,
                 "original_tc_json": original_json_str,
-                "user_instructions": instructions
+                "user_instructions": instructions,
+                "requirements_context_retrieved": requirements_context_retrieved
             })
-            log_message(f"Refactor chain invocation complete for TC '{tc_id}'.", "DEBUG")
-            log_message(f"Raw LLM output for refactor:\n---\n{response_str}\n---", "DEBUG")
 
         if not response_str or not response_str.strip():
             log_message(f"LLM returned empty response for refactoring TC '{tc_id}'.", "WARNING")
             st.warning(f"LLM returned an empty response for refactoring TC '{tc_id}'. No changes applied.")
             return None
 
-        log_message(f"Attempting to parse refactor response as JSON object: '{response_str[:200]}...'", "DEBUG")
         updated_tc_data = parse_json_output(response_str, expected_type=dict)
-
-        if updated_tc_data is None:
+        if updated_tc_data is None or not isinstance(updated_tc_data, dict):
             log_message(f"Refactor failed for TC '{tc_id}': Failed to parse JSON object response.", "ERROR")
             st.error(f"Refactoring failed for TC '{tc_id}': LLM response was not a valid JSON object representing the test case.")
             return None
 
-        if not isinstance(updated_tc_data, dict):
-             log_message(f"Refactor failed for TC '{tc_id}': Parsed result is not a dictionary (Type: {type(updated_tc_data)}).", "ERROR")
-             st.error(f"Refactoring failed for TC '{tc_id}': Unexpected result format after parsing.")
-             return None
-
-        new_tc_id = updated_tc_data.get("Test Case ID")
         original_id = original_tc_data.get("Test Case ID", tc_id)
-
+        new_tc_id = updated_tc_data.get("Test Case ID")
         if new_tc_id is not None and str(new_tc_id) != str(original_id):
             log_message(f"LLM changed TC ID during refactor from '{original_id}' to '{new_tc_id}'. Reverting.", "WARNING")
             st.warning(f"LLM attempted to change the Test Case ID from '{original_id}' to '{new_tc_id}'. The original ID has been restored.")
             updated_tc_data["Test Case ID"] = original_id
         elif "Test Case ID" not in updated_tc_data:
-             log_message(f"LLM removed TC ID during refactor for '{original_id}'. Re-adding.", "WARNING")
-             st.warning(f"LLM removed the Test Case ID during refactoring. The original ID '{original_id}' has been re-added.")
-             updated_tc_data["Test Case ID"] = original_id
+            log_message(f"LLM removed TC ID during refactor for '{original_id}'. Re-adding.", "WARNING")
+            st.warning(f"LLM removed the Test Case ID during refactoring. The original ID '{original_id}' has been re-added.")
+            updated_tc_data["Test Case ID"] = original_id
+
+        updated_tc_data = _normalize_test_case_schema(updated_tc_data, fallback_trace=fallback_trace)
 
         log_message(f"Refactor successful for TC '{tc_id}'.", "INFO")
         st.success(f"Test Case '{tc_id}' refactored successfully based on instructions.")
         return updated_tc_data
 
     except Exception as e:
-        # *** REMOVED exc_info=True ***
         log_message(f"Exception during refactoring process for TC '{tc_id}': {type(e).__name__} - {e}", "ERROR")
         st.error(f"An unexpected error occurred during the refactoring process for TC '{tc_id}': {e}")
         return None
-
 # --- NEW: refactor_all_test_cases Function ---
 def refactor_all_test_cases(
     app_name: str,
     instructions: str,
     original_tc_list: List[Dict],
     llm: BaseChatModel,
-    provider_name: str
+    embeddings: Embeddings,
+    provider_name: str,
+    requirements_text: str,
+    additional_context_str: str = ""
 ) -> Optional[List[Dict]]:
     """
-    Uses the LLM to refactor ALL test cases in a list based on user instructions.
+    Uses RAG + LLM to refactor all test cases in a list based on user instructions.
     Expects the LLM to return a JSON list of updated test case dictionaries.
     """
     log_message(f"Starting bulk refactor for app '{app_name}' using provider {provider_name}...", "INFO")
@@ -756,6 +929,14 @@ def refactor_all_test_cases(
     if not llm:
         st.error("Cannot refactor: LLM is not initialized.")
         log_message("Bulk refactor failed: LLM not initialized.", "ERROR")
+        return None
+    if not embeddings:
+        st.error("Cannot refactor: Embeddings are not initialized (required for RAG).")
+        log_message("Bulk refactor failed: Embeddings not initialized.", "ERROR")
+        return None
+    if not requirements_text or not requirements_text.strip():
+        st.error("Cannot refactor: Requirements text is empty.")
+        log_message("Bulk refactor failed: Requirements text empty.", "ERROR")
         return None
     if not original_tc_list or not isinstance(original_tc_list, list):
         st.error(f"Cannot refactor: Invalid original test case list provided for app '{app_name}'. Expected a list of dictionaries.")
@@ -768,95 +949,99 @@ def refactor_all_test_cases(
     if not instructions or not instructions.strip():
         st.info(f"Bulk refactor skipped for app '{app_name}': Modification instructions are empty.")
         log_message(f"Bulk refactor skipped: Empty instructions provided for app '{app_name}'.", "INFO")
-        return None # Or return original_tc_list? Returning None indicates no attempt made.
+        return None
 
     try:
-        try:
-            # Serialize the entire list of original test cases
-            original_list_json_str = json.dumps(original_tc_list, separators=(',', ':'))
-        except TypeError as te:
-            log_message(f"Bulk refactor failed for app '{app_name}': Could not serialize original list to JSON: {te}", "ERROR")
-            st.error(f"Error preparing original test cases for app '{app_name}' for refactoring: Could not convert list to JSON. {te}")
-            return None
+        original_list_json_str = json.dumps(original_tc_list, separators=(',', ':'))
+    except TypeError as te:
+        log_message(f"Bulk refactor failed for app '{app_name}': Could not serialize original list to JSON: {te}", "ERROR")
+        st.error(f"Error preparing original test cases for app '{app_name}' for refactoring: Could not convert list to JSON. {te}")
+        return None
 
-        # Use a new template key for bulk refactoring
+    try:
+        vectorstore = _get_or_create_requirement_vectorstore(requirements_text, embeddings)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": RETRIEVER_SEARCH_K})
+
+        sample_names = [tc.get("Test Case Name", "") for tc in original_tc_list[:5] if isinstance(tc, dict)]
+        retrieval_query = (
+            f"Application: {app_name}. "
+            f"Bulk refactor instructions: {instructions}. "
+            f"Representative test case names: {', '.join(sample_names)}"
+        )
+        retrieved_docs = retriever.invoke(retrieval_query)
+        traceability_refs = _extract_traceability_refs_from_docs(retrieved_docs)
+        fallback_trace = _default_traceability_from_refs(traceability_refs)
+        requirements_context_retrieved = _format_retrieved_docs_for_prompt(retrieved_docs)
+
+        if additional_context_str and additional_context_str.strip():
+            requirements_context_retrieved = (
+                f"{requirements_context_retrieved}\n\n[ADDITIONAL_CONTEXT]\n{additional_context_str.strip()}"
+            )
+
         template_key = "REFACTOR_ALL_TC"
         prompt_template_str = get_prompt_template(provider_name, template_key)
-        if prompt_template_str.startswith("Error:"): # Check if template fetching failed
-             st.error(prompt_template_str)
-             return None
+        if prompt_template_str.startswith("Error:"):
+            st.error(prompt_template_str)
+            return None
+
         prompt = ChatPromptTemplate.from_template(prompt_template_str)
-        log_message(f"Using prompt for bulk refactoring app '{app_name}':\n{prompt_template_str}", "DEBUG")
         chain = prompt | llm | StrOutputParser()
-        log_message(f"Bulk refactor chain created for app '{app_name}'.", "DEBUG")
 
         with st.spinner(f"Asking LLM ({provider_name}) to refactor all test cases for '{app_name}'..."):
-            log_message(f"Invoking bulk refactor chain for app '{app_name}'...", "DEBUG")
             response_str = chain.invoke({
                 "app_name": app_name,
                 "original_tc_list_json": original_list_json_str,
-                "user_instructions": instructions
+                "user_instructions": instructions,
+                "requirements_context_retrieved": requirements_context_retrieved
             })
-            log_message(f"Bulk refactor chain invocation complete for app '{app_name}'.", "DEBUG")
-            log_message(f"Raw LLM output for bulk refactor:\n---\n{response_str}\n---", "DEBUG")
 
         if not response_str or not response_str.strip():
             log_message(f"LLM returned empty response for bulk refactoring app '{app_name}'.", "WARNING")
             st.warning(f"LLM returned an empty response for bulk refactoring app '{app_name}'. No changes applied.")
             return None
 
-        log_message(f"Attempting to parse bulk refactor response as JSON list: '{response_str[:200]}...'", "DEBUG")
-        # Use the helper to extract list structure first
         extracted_list_str = _extract_list_from_llm_output(response_str)
-        updated_tc_list = None
-        if extracted_list_str:
-             log_message("Using extracted list string for JSON/AST parsing.", "INFO")
-             updated_tc_list = parse_json_output(extracted_list_str, expected_type=list)
-        else:
-             log_message("List extraction failed. Attempting to parse raw LLM output directly (might fail).", "WARNING")
-             updated_tc_list = parse_json_output(response_str, expected_type=list)
+        updated_tc_list = parse_json_output(extracted_list_str, expected_type=list) if extracted_list_str else parse_json_output(response_str, expected_type=list)
 
-
-        if updated_tc_list is None:
+        if updated_tc_list is None or not isinstance(updated_tc_list, list):
             log_message(f"Bulk refactor failed for app '{app_name}': Failed to parse JSON list response.", "ERROR")
             st.error(f"Bulk refactoring failed for app '{app_name}': LLM response was not a valid JSON list of test cases.")
             return None
 
-        if not isinstance(updated_tc_list, list):
-             log_message(f"Bulk refactor failed for app '{app_name}': Parsed result is not a list (Type: {type(updated_tc_list)}).", "ERROR")
-             st.error(f"Bulk refactoring failed for app '{app_name}': Unexpected result format after parsing.")
-             return None
+        valid_refactored_cases: List[Dict[str, Any]] = []
+        for idx, tc in enumerate(updated_tc_list):
+            if not isinstance(tc, dict):
+                continue
+            original_id = original_tc_list[idx].get("Test Case ID") if idx < len(original_tc_list) else None
+            if original_id and str(tc.get("Test Case ID", "")) != str(original_id):
+                tc["Test Case ID"] = original_id
+            valid_refactored_cases.append(_normalize_test_case_schema(tc, fallback_trace=fallback_trace))
 
-        # Basic validation: Check if the result is a list of dictionaries
-        valid_refactored_cases = [tc for tc in updated_tc_list if isinstance(tc, dict)]
         if len(valid_refactored_cases) != len(updated_tc_list):
-             log_message(f"Bulk refactor for app '{app_name}': Result list contained non-dictionary items. Filtering them out.", "WARNING")
-             st.warning("Some items returned by the LLM were not valid test case dictionaries and have been removed.")
+            log_message(f"Bulk refactor for app '{app_name}': Result list contained non-dictionary items. Filtered.", "WARNING")
+            st.warning("Some items returned by the LLM were not valid test case dictionaries and have been removed.")
 
-        # Optional: More robust validation (e.g., check if IDs match original list)
-        # For now, just return the list of dictionaries found.
         log_message(f"Bulk refactor successful for app '{app_name}'. Returned {len(valid_refactored_cases)} test cases.", "INFO")
         st.success(f"All test cases for '{app_name}' refactored successfully based on instructions.")
         return valid_refactored_cases
 
     except Exception as e:
-        # *** REMOVED exc_info=True ***
         log_message(f"Exception during bulk refactoring process for app '{app_name}': {type(e).__name__} - {e}", "ERROR")
         st.error(f"An unexpected error occurred during the bulk refactoring process for app '{app_name}': {e}")
         return None
-
 # --- NEW: perform_ai_test_case_review Function ---
 def perform_ai_test_case_review(
     main_requirements_text: str,
     additional_context_str: str,
     existing_test_cases: List[Dict],
     llm: BaseChatModel,
-    provider_name: str
+    embeddings: Embeddings,
+    provider_name: str,
+    app_name: str = ""
 ) -> Optional[Dict]:
     """
-    Uses the LLM to review a list of existing test cases against requirements and context.
-    The LLM is expected to return a JSON object detailing coverage, new suggestions,
-    modifications, and duplicates.
+    Uses RAG + LLM to review existing test cases against requirements and context.
+    The LLM is expected to return a JSON object detailing coverage, suggestions, and duplicates.
     """
     log_message(f"Starting AI test case review using provider: {provider_name}...", "INFO")
 
@@ -864,92 +1049,105 @@ def perform_ai_test_case_review(
         st.error("Cannot perform AI review: LLM is not initialized.")
         log_message("AI review failed: LLM not initialized.", "ERROR")
         return None
+    if not embeddings:
+        st.error("Cannot perform AI review: Embeddings are not initialized (required for RAG).")
+        log_message("AI review failed: Embeddings not initialized.", "ERROR")
+        return None
     if not main_requirements_text or not main_requirements_text.strip():
         st.error("Cannot perform AI review: Main requirements text is empty.")
         log_message("AI review failed: Main requirements text is empty.", "ERROR")
         return None
-    # additional_context_str can be empty, so no check for that.
-    if not isinstance(existing_test_cases, list): # Could be empty list, that's fine
+    if not isinstance(existing_test_cases, list):
         st.error("Cannot perform AI review: Existing test cases data is not a list.")
         log_message(f"AI review failed: existing_test_cases is not a list. Type: {type(existing_test_cases)}", "ERROR")
         return None
 
     try:
-        # Prepare inputs for the prompt
-        try:
-            existing_test_cases_json_str = json.dumps(existing_test_cases, separators=(',', ':'))
-        except TypeError as te:
-            log_message(f"AI review failed: Could not serialize existing test cases to JSON: {te}", "ERROR")
-            st.error(f"Error preparing existing test cases for AI review: Could not convert data to JSON. {te}")
-            return None
+        existing_test_cases_json_str = json.dumps(existing_test_cases, separators=(',', ':'))
+    except TypeError as te:
+        log_message(f"AI review failed: Could not serialize existing test cases to JSON: {te}", "ERROR")
+        st.error(f"Error preparing existing test cases for AI review: Could not convert data to JSON. {te}")
+        return None
 
-        if not isinstance(EXCEL_EXPECTED_COLUMNS, list) or not EXCEL_EXPECTED_COLUMNS:
-            log_message("AI review failed: EXCEL_EXPECTED_COLUMNS not defined correctly in config.", "ERROR")
-            st.error("Configuration Error: EXCEL_EXPECTED_COLUMNS is missing or invalid.")
-            return None
+    if not isinstance(EXCEL_EXPECTED_COLUMNS, list) or not EXCEL_EXPECTED_COLUMNS:
+        log_message("AI review failed: EXCEL_EXPECTED_COLUMNS not defined correctly in config.", "ERROR")
+        st.error("Configuration Error: EXCEL_EXPECTED_COLUMNS is missing or invalid.")
+        return None
+
+    try:
+        vectorstore = _get_or_create_requirement_vectorstore(main_requirements_text, embeddings)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": RETRIEVER_SEARCH_K})
+        sample_tc_names = [tc.get("Test Case Name", "") for tc in existing_test_cases[:8] if isinstance(tc, dict)]
+        retrieval_query = (
+            f"Application: {app_name}. "
+            f"Review these test cases for requirement coverage and traceability. "
+            f"Representative test case names: {', '.join(sample_tc_names)}"
+        )
+        retrieved_docs = retriever.invoke(retrieval_query)
+        traceability_refs = _extract_traceability_refs_from_docs(retrieved_docs)
+        fallback_trace = _default_traceability_from_refs(traceability_refs)
+        requirements_context_retrieved = _format_retrieved_docs_for_prompt(retrieved_docs)
+
         field_names_str = ", ".join([f"`{col}`" for col in EXCEL_EXPECTED_COLUMNS])
-
-        template_key = "AI_REVIEW_TC" # Matches the new template in config.py
+        template_key = "AI_REVIEW_TC"
         prompt_template_str = get_prompt_template(provider_name, template_key)
-        if prompt_template_str.startswith("Error:"): # Check if template fetching failed
-             st.error(prompt_template_str)
-             log_message(f"AI review failed: Prompt template '{template_key}' could not be loaded.", "ERROR")
-             return None
+        if prompt_template_str.startswith("Error:"):
+            st.error(prompt_template_str)
+            log_message(f"AI review failed: Prompt template '{template_key}' could not be loaded.", "ERROR")
+            return None
 
-        # Format the prompt template string
-        # The new prompt has placeholders: {field_names}, {{main_requirements}}, {{additional_context}}, {{existing_test_cases_json}}
-        # We need to ensure these are correctly substituted.
-        # Langchain's ChatPromptTemplate.from_template handles {{...}} style placeholders.
-        # We manually insert field_names as it's part of the fixed structure description within the prompt.
         formatted_prompt_str = prompt_template_str.format(field_names=field_names_str)
         prompt = ChatPromptTemplate.from_template(formatted_prompt_str)
-
-        log_message(f"Using prompt for AI test case review:\n{formatted_prompt_str[:500]}...", "DEBUG") # Log beginning of prompt
         chain = prompt | llm | StrOutputParser()
-        log_message("AI review chain created.", "DEBUG")
 
         with st.spinner(f"Asking LLM ({provider_name}) to review test cases..."):
-            log_message("Invoking AI review chain...", "DEBUG")
             response_str = chain.invoke({
-                "main_requirements": main_requirements_text,
+                "requirements_context_retrieved": requirements_context_retrieved,
                 "additional_context": additional_context_str,
                 "existing_test_cases_json": existing_test_cases_json_str
             })
-            log_message("AI review chain invocation complete.", "DEBUG")
-            log_message(f"Raw LLM output for AI review:\n---\n{response_str}\n---", "DEBUG")
 
         if not response_str or not response_str.strip():
             log_message("LLM returned empty response for AI review.", "WARNING")
             st.warning("LLM returned an empty response for the AI review. No analysis available.")
             return None
 
-        log_message(f"Attempting to parse AI review response as JSON object: '{response_str[:200]}...'", "DEBUG")
-        # The AI_REVIEW_TC_PROMPT_TEMPLATE asks for a single JSON object.
-        # _extract_list_from_llm_output is for lists, so we use parse_json_output directly.
         review_results_dict = parse_json_output(response_str, expected_type=dict)
-
-        if review_results_dict is None:
+        if review_results_dict is None or not isinstance(review_results_dict, dict):
             log_message("AI review failed: Failed to parse JSON object response from LLM.", "ERROR")
             st.error("AI review failed: LLM response was not a valid JSON object as expected.")
             return None
 
-        if not isinstance(review_results_dict, dict):
-             log_message(f"AI review failed: Parsed result is not a dictionary (Type: {type(review_results_dict)}).", "ERROR")
-             st.error("AI review failed: Unexpected result format after parsing.")
-             return None
-
-        # Basic validation of expected top-level keys (can be expanded)
         expected_top_keys = ["coverage_summary", "newly_suggested_test_cases", "modified_test_cases_suggestions", "identified_duplicates"]
         for key in expected_top_keys:
             if key not in review_results_dict:
                 log_message(f"AI review warning: Expected key '{key}' not found in LLM response.", "WARNING")
-                st.warning(f"AI review result is missing the expected section: '{key}'. The output might be incomplete.")
-                # Initialize missing keys as empty lists or strings to prevent downstream errors
-                if key.endswith("_summary"):
+                if key == "coverage_summary":
                     review_results_dict[key] = "Summary not provided by AI."
                 else:
                     review_results_dict[key] = []
 
+        normalized_new = []
+        for tc in review_results_dict.get("newly_suggested_test_cases", []):
+            if isinstance(tc, dict):
+                normalized_new.append(_normalize_test_case_schema(tc, fallback_trace=fallback_trace))
+        review_results_dict["newly_suggested_test_cases"] = normalized_new
+
+        normalized_modified = []
+        for suggestion in review_results_dict.get("modified_test_cases_suggestions", []):
+            if not isinstance(suggestion, dict):
+                continue
+            suggested_tc_data = suggestion.get("suggested_test_case_data")
+            if isinstance(suggested_tc_data, dict):
+                suggestion["suggested_test_case_data"] = _normalize_test_case_schema(
+                    suggested_tc_data,
+                    fallback_trace=fallback_trace
+                )
+            normalized_modified.append(suggestion)
+        review_results_dict["modified_test_cases_suggestions"] = normalized_modified
+
+        if not isinstance(review_results_dict.get("identified_duplicates"), list):
+            review_results_dict["identified_duplicates"] = []
 
         log_message("AI review successful. Parsed LLM response.", "INFO")
         st.success("AI Test Case Review complete.")

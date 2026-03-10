@@ -34,10 +34,12 @@ Identified Applications (Python list format only):
 """
 
 GENERATE_TC_PROMPT_TEMPLATE = """You are an expert QA Analyst generating test cases based on provided requirements context. Create detailed, actionable test cases.
-**Carefully consider both the 'Requirements Context Retrieved' below and each test cases should be mapped to FR or BR ID, for traceability AND any 'Additional Context' provided within the 'User Input Query/Focus' when generating the test cases, especially for populating fields like 'Test Data'.**
+**Carefully consider both the 'Requirements Context Retrieved' below and each test case should be mapped to FR or BR ID, for traceability AND any 'Additional Context' provided within the 'User Input Query/Focus' when generating the test cases, especially for populating fields like 'Test Data'.**
 
 Format your response *only* as a single JSON list of objects. Each object represents a test case and must include these fields: `{field_names}`.
 The 'Test Steps' and 'Expected Results' should be lists of strings, where each string is a separate step or result. The number of test steps should match the number of expected results.
+Populate `source_chunk_id` with the chunk identifier(s) used from the retrieved context (for example: `CHUNK_0003` or `CHUNK_0003,CHUNK_0007`).
+Populate `source_requirement_excerpt` with a short direct excerpt from the retrieved requirement context that justifies the test case.
 
 Ensure the JSON is valid. Do not include any text before or after the JSON list.
 
@@ -50,10 +52,18 @@ User Input Query/Focus:
 JSON Output (List of Test Case Objects):
 """
 
-REFACTOR_TC_PROMPT_TEMPLATE = """You are an expert QA Analyst modifying an existing test case based on user instructions.
+REFACTOR_TC_PROMPT_TEMPLATE = """You are an expert QA Analyst modifying an existing test case based on user instructions and retrieved requirement context.
 
 Return *only* the complete, updated JSON object for the *single* test case being modified. Ensure all original fields are present unless the instructions specifically dictate removal.
 The `Test Case ID` should generally remain `{tc_id}`, unless explicitly asked to change it. Ensure the output is a valid JSON object, with no surrounding text.
+You must keep or update traceability fields:
+- `source_chunk_id`: chunk identifier(s) used from requirement context.
+- `source_requirement_excerpt`: short requirement excerpt that justifies the updated test case.
+
+Requirements Context Retrieved:
+```text
+{requirements_context_retrieved}
+```
 
 Original Test Case JSON:
 ```json
@@ -69,13 +79,21 @@ Updated Test Case JSON Object Only:
 """
 
 # --- NEW: Bulk Refactoring Prompt ---
-REFACTOR_ALL_TC_PROMPT_TEMPLATE = """You are an expert QA Analyst modifying a list of existing test cases based on general user instructions. Apply the instructions thoughtfully to each test case in the provided list.
+REFACTOR_ALL_TC_PROMPT_TEMPLATE = """You are an expert QA Analyst modifying a list of existing test cases based on general user instructions and retrieved requirement context. Apply the instructions thoughtfully to each test case in the provided list.
 
 Return *only* a complete JSON list containing the updated JSON objects for *all* the test cases provided.
 - Ensure each object in the returned list is a valid JSON object representing a test case.
 - Preserve the original `Test Case ID` for each test case unless the instructions specifically ask to change IDs across the board.
 - Ensure all original fields are present in each updated test case object unless the instructions specifically dictate removal or modification.
 - The number of test cases in the output list should match the number in the input list.
+- Every test case must include traceability fields:
+  - `source_chunk_id`
+  - `source_requirement_excerpt`
+
+Requirements Context Retrieved:
+```text
+{requirements_context_retrieved}
+```
 
 Original Test Case List (JSON):
 ```json
@@ -95,19 +113,19 @@ AI_REVIEW_TC_PROMPT_TEMPLATE = """You are an expert QA Lead tasked with reviewin
 Your goal is to identify coverage gaps, suggest improvements to existing test cases, recommend new test cases, and flag duplicates.
 
 **Inputs Provided to You:**
-1.  `main_requirements`: The primary business requirements document text.
+1.  `requirements_context_retrieved`: Requirement chunks retrieved from vector search for this review.
 2.  `additional_context`: Concatenated text from all supplementary context documents.
 3.  `existing_test_cases`: A JSON list of current test cases. Each test case object has the following fields: {field_names}.
 
 **Your Task:**
-Analyze the `existing_test_cases` in light of the `main_requirements` and `additional_context`.
+Analyze the `existing_test_cases` in light of the `requirements_context_retrieved` and `additional_context`.
 Return a *single JSON object* with the following top-level keys:
 -   `coverage_summary`: (String) A brief summary of how well the existing test cases cover the requirements.
--   `newly_suggested_test_cases`: (JSON List of Objects) A list of new test case objects you recommend. Each object *must* conform to the fields: {field_names}. If no new test cases are needed, provide an empty list [].
+-   `newly_suggested_test_cases`: (JSON List of Objects) A list of new test case objects you recommend. Each object *must* conform to the fields: {field_names}, including `source_chunk_id` and `source_requirement_excerpt`. If no new test cases are needed, provide an empty list [].
 -   `modified_test_cases_suggestions`: (JSON List of Objects) A list of suggestions for modifying existing test cases. Each object in this list *must* have:
     -   `original_test_case_id`: (String) The 'Test Case ID' of the test case to be modified.
     -   `modification_reason`: (String) A brief explanation of why the modification is suggested.
-    -   `suggested_test_case_data`: (JSON Object) The complete test case data for the *modified* version, including all fields: {field_names}.
+    -   `suggested_test_case_data`: (JSON Object) The complete test case data for the *modified* version, including all fields: {field_names}, and include `source_chunk_id` and `source_requirement_excerpt`.
     If no modifications are needed, provide an empty list [].
 -   `identified_duplicates`: (JSON List of Objects) A list of objects, where each object represents a group of duplicate or highly redundant test cases. Each object *must* have:
     -   `duplicate_group_id`: (String) A unique identifier for this group of duplicates (e.g., "DUP_GROUP_1").
@@ -123,9 +141,9 @@ Return a *single JSON object* with the following top-level keys:
 
 **Inputs:**
 
-Main Requirements (`main_requirements`):
+Requirements Context Retrieved (`requirements_context_retrieved`):
 ```text
-{{main_requirements}}
+{{requirements_context_retrieved}}
 ```
 
 Additional Context (`additional_context`):
@@ -165,7 +183,15 @@ LLM_PROVIDER_CONFIG = {
         "llm_class": "ChatGoogleGenerativeAI",
         "embeddings_module": "langchain_google_genai",
         "embeddings_class": "GoogleGenerativeAIEmbeddings",
-        "embeddings_model_id": "models/embedding-001",
+        "embeddings_model_id": "models/gemini-embedding-001",
+        "embeddings_model_ids": [
+            "models/gemini-embedding-001",
+            "gemini-embedding-001",
+            "models/text-embedding-004",
+            "text-embedding-004",
+            "models/embedding-001",
+            "embedding-001"
+        ],
         "notes": "Requires Google API Key (often called GOOGLE_API_KEY).",
         "pricing": {
             "gemini-1.5-pro-latest": {"input": 0.0035, "output": 0.0105},
@@ -269,7 +295,20 @@ RETRIEVER_SEARCH_K = 5
 
 # --- Excel Export Settings ---
 EXCEL_EXPORT_FILENAME = "generated_test_cases.xlsx"
-EXCEL_EXPECTED_COLUMNS = ['Test Case ID', 'FR/BR ID', 'Test Case Name', 'Description', 'Preconditions', 'Step #', 'Test Steps', 'Expected Results', 'Test Data', 'Priority']
+EXCEL_EXPECTED_COLUMNS = [
+    'Test Case ID',
+    'FR/BR ID',
+    'Test Case Name',
+    'Description',
+    'Preconditions',
+    'Step #',
+    'Test Steps',
+    'Expected Results',
+    'Test Data',
+    'Priority',
+    'source_requirement_excerpt',
+    'source_chunk_id'
+]
 EXCEL_MAX_COL_WIDTH = 60
 EXCEL_DEFAULT_COL_WIDTH = 20
 EXCEL_SHEET_NAME_MAX_LEN = 31

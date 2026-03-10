@@ -69,17 +69,66 @@ def _initialize_gemini(config_dict: Dict, credentials: Dict, model_name: str) ->
         st.error("Failed to import necessary LangChain classes for Gemini. Ensure `langchain-google-genai` is installed.")
         return None, None
 
+    selected_embedding_model = None
     try:
         # Initialize the LLM
         # Note: `convert_system_message_to_human=True` might be needed depending on LangChain version and Gemini model behavior
         llm = LLMClass(google_api_key=api_key, model=model_name, temperature=DEFAULT_TEMPERATURE, convert_system_message_to_human=True)
         log_message(f"Gemini LLM Class {LLMClass.__name__} initialized for model '{model_name}'.", "DEBUG")
 
-        # Initialize Embeddings
-        # Allow overriding the default embedding model via config if needed
-        embed_model_id = config_dict.get("embeddings_model_id", "models/embedding-001")
-        embeddings = EmbeddingsClass(model=embed_model_id, google_api_key=api_key)
-        log_message(f"Gemini Embeddings Class {EmbeddingsClass.__name__} initialized (model: {embed_model_id}).", "DEBUG")
+        # Initialize Embeddings with candidate fallback probing.
+        configured_model = config_dict.get("embeddings_model_id")
+        configured_candidates = config_dict.get("embeddings_model_ids", [])
+        default_candidates = [
+            "models/gemini-embedding-001",
+            "gemini-embedding-001",
+            "models/text-embedding-004",
+            "text-embedding-004",
+            "models/embedding-001",
+            "embedding-001",
+        ]
+
+        candidates = []
+        if configured_model:
+            candidates.append(configured_model)
+        if isinstance(configured_candidates, list):
+            candidates.extend(configured_candidates)
+        candidates.extend(default_candidates)
+
+        # De-duplicate while preserving order.
+        dedup_candidates = []
+        for candidate in candidates:
+            if candidate and candidate not in dedup_candidates:
+                dedup_candidates.append(candidate)
+
+        embeddings = None
+        candidate_errors = []
+        for candidate_model in dedup_candidates:
+            try:
+                probe_embeddings = EmbeddingsClass(model=candidate_model, google_api_key=api_key)
+                # Probe once so unsupported models fail fast here, not during generation.
+                probe_vector = probe_embeddings.embed_query("ping")
+                if not probe_vector:
+                    raise ValueError("Embedding probe returned empty vector.")
+                embeddings = probe_embeddings
+                selected_embedding_model = candidate_model
+                log_message(
+                    f"Gemini Embeddings Class {EmbeddingsClass.__name__} initialized and probed (model: {candidate_model}).",
+                    "DEBUG"
+                )
+                break
+            except Exception as candidate_error:
+                candidate_errors.append(f"{candidate_model}: {candidate_error}")
+
+        if embeddings is None:
+            error_msg = (
+                "Failed to initialize Gemini embeddings for candidate models "
+                f"{dedup_candidates}. Last error: {candidate_errors[-1] if candidate_errors else 'Unknown error'}"
+            )
+            log_message(f"Gemini Embeddings init failed: {error_msg}", "ERROR")
+            # Return LLM so non-RAG operations (like identify) can still run.
+            st.error(f"Gemini Embeddings Error: {error_msg}")
+            return llm, None
 
         log_message("Gemini provider initialized successfully.", "INFO")
         return llm, embeddings
@@ -90,7 +139,7 @@ def _initialize_gemini(config_dict: Dict, credentials: Dict, model_name: str) ->
         if "api key not valid" in str(e).lower():
             st.error("Gemini Authentication Failed: API Key is not valid. Please check your key and ensure the Google AI API is enabled in your cloud console.")
         elif "permission denied" in str(e).lower():
-             st.error(f"Gemini Permission Denied: Check if the API key has access to the model '{model_name}' or embedding model '{embed_model_id}'. Error: {e}")
+             st.error(f"Gemini Permission Denied: Check if the API key has access to model '{model_name}' and embedding model '{selected_embedding_model or 'auto-detected candidate'}'. Error: {e}")
         else:
             st.error(f"Gemini Permission/Value Error: {e}")
         return None, None
@@ -105,7 +154,10 @@ def _initialize_gemini(config_dict: Dict, credentials: Dict, model_name: str) ->
         log_message(error_msg, "ERROR")
         # Check for common errors like model not found
         if "model" in str(e).lower() and ("not found" in str(e).lower() or "permission denied" in str(e).lower()):
-             st.error(f"Gemini Error: Model '{model_name}' or embedding model '{embed_model_id}' not found or inaccessible with your API key.")
+             st.error(
+                 f"Gemini Error: Model '{model_name}' or embedding model "
+                 f"'{selected_embedding_model or 'auto-detected candidate'}' not found/inaccessible with your API key."
+             )
         else:
             st.error(error_msg)
         return None, None
