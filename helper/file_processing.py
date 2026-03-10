@@ -17,6 +17,13 @@ except ImportError:
     # Warning logged during docx extraction attempt if needed
 
 try:
+    import fitz  # PyMuPDF
+    FITZ_AVAILABLE = True
+except ImportError:
+    FITZ_AVAILABLE = False
+    # Warning logged during pdf extraction attempt if needed
+
+try:
     import yaml
     YAML_AVAILABLE = True
 except ImportError:
@@ -69,6 +76,38 @@ def extract_text_from_docx(file: UploadedFile) -> Optional[str]:
         return None
     except Exception as e:
         log_message(f"Error extracting text from DOCX using mammoth ({file.name}): {e}", "ERROR", exc_info=True)
+        return None
+
+# --- PDF Extraction ---
+def extract_text_from_pdf(file: UploadedFile) -> Optional[str]:
+    """
+    Extracts text content from an uploaded .pdf file using PyMuPDF (fitz).
+
+    Args:
+        file: The Streamlit UploadedFile object (.pdf).
+
+    Returns:
+        The extracted text as a string, or None if extraction fails or
+        PyMuPDF is not available.
+    """
+    if not FITZ_AVAILABLE:
+        log_message("Cannot extract PDF: `PyMuPDF` (fitz) library is missing. Install with `pip install PyMuPDF`", "ERROR")
+        return None
+
+    if not file:
+        log_message("No file provided for PDF extraction.", "ERROR")
+        return None
+
+    try:
+        file_bytes = file.getvalue()
+        full_text = ""
+        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+            for page in doc:
+                full_text += page.get_text()
+        log_message(f"Successfully extracted text from PDF: {file.name}", "DEBUG")
+        return full_text
+    except Exception as e:
+        log_message(f"Error extracting text from PDF using PyMuPDF ({file.name}): {e}", "ERROR", exc_info=True)
         return None
 
 # --- TXT / MD Extraction ---
@@ -229,6 +268,8 @@ def extract_text_from_file(file: UploadedFile) -> Optional[str]:
 
      if file_name_lower.endswith(".docx"):
          return extract_text_from_docx(file)
+     elif file_name_lower.endswith(".pdf"):
+         return extract_text_from_pdf(file)
      elif file_name_lower.endswith((".txt", ".md")):
          return extract_text_from_txt_or_md(file)
      elif file_name_lower.endswith(".xlsx"):

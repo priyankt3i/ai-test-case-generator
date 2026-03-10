@@ -132,18 +132,18 @@ with st.sidebar:
         st.sidebar.error("Logo image not found. Please check the path.")
 
     st.header("📄 Upload Document")
-    uploaded_file = st.file_uploader(
-        "Upload Requirements (.docx)",
+    uploaded_files = st.file_uploader(
+        "Upload Requirements (.docx, .pdf)",
         type=config.ACCEPTED_FILE_TYPES,
-        key="sidebar_file_uploader_widget", # Keep key consistent
-        help=f"Upload a requirements file in {', '.join(f'.{ext}' for ext in config.ACCEPTED_FILE_TYPES)} format."
+        key="sidebar_file_uploader_widget",
+        help=f"Upload one or more requirements files in {', '.join(f'.{ext}' for ext in config.ACCEPTED_FILE_TYPES)} format.",
+        accept_multiple_files=True
     )
-    # Update state only if a new file is uploaded
-    if uploaded_file is not None and st.session_state.uploaded_file_state != uploaded_file:
-         st.session_state.uploaded_file_state = uploaded_file
-         # No automatic rerun here, let the main logic handle new file detection
 
-    current_file = st.session_state.uploaded_file_state # Use the potentially updated state
+    if uploaded_files:
+        st.session_state.uploaded_file_state = uploaded_files
+    
+    current_files = st.session_state.get('uploaded_file_state', [])
 
     st.divider()
     # Render LLM Configuration UI
@@ -161,14 +161,14 @@ st.header("Convert Business Requirements to Test Cases")
 st.markdown("Upload requirements, configure LLM, identify applications, generate test cases, refactor, and view logs.")
 
 # --- File Processing Logic ---
-if current_file:
-    # Use file name and size as a unique identifier for the uploaded requirements doc
-    current_file_id = (current_file.name, current_file.size)
+if current_files:
+    # Create a unique identifier for the current set of files
+    current_files_id = tuple((file.name, file.size) for file in current_files)
 
-    # Check if the file has changed since the last run
-    if st.session_state.current_file_identifier != current_file_id:
-        utils.log_message(f"New file detected: '{current_file.name}'. Resetting state.", "INFO")
-        st.info(f"New file detected: '{current_file.name}'. Resetting application state...")
+    # Check if the set of files has changed since the last run
+    if st.session_state.current_file_identifier != current_files_id:
+        utils.log_message(f"New file set detected. Resetting state.", "INFO")
+        st.info(f"New file set detected. Resetting application state...")
         # Reset state variables associated with the previous file
         st.session_state.extracted_text = ""
         st.session_state.identified_applications = []
@@ -182,7 +182,7 @@ if current_file:
         # st.session_state.available_context_files = [config.NO_CONTEXT_OPTION] # Likely not needed here anymore
         # *** END MODIFICATION ***
 
-        st.session_state.current_file_identifier = current_file_id # Store the new identifier
+        st.session_state.current_file_identifier = current_files_id # Store the new identifier
         # Reset single modification state
         st.session_state.modification_app_name = None
         st.session_state.modification_tc_id = None
@@ -198,17 +198,19 @@ if current_file:
 
     # --- Text Extraction (only if not already extracted for current file) ---
     if not st.session_state.extracted_text:
-        utils.log_message(f"Attempting text extraction from '{current_file.name}'.", "INFO")
-        with st.spinner(f"Extracting text from '{current_file.name}'..."):
-            # Use the generic dispatcher if available, otherwise call specific extractor
-            if hasattr(file_processing, 'extract_text_from_file'):
-                 extracted = file_processing.extract_text_from_file(current_file)
-            elif current_file.name.lower().endswith(".docx"):
-                 extracted = file_processing.extract_text_from_docx(current_file)
-            else:
-                 extracted = None # Handle other types if needed or show error
-                 utils.log_message(f"Unsupported main file type for direct extraction: {current_file.name}", "ERROR")
-                 st.error(f"Unsupported file type for requirements document: {current_file.name}. Please upload a .docx file.")
+        all_extracted_text = []
+        with st.spinner(f"Extracting text from {len(current_files)} file(s)..."):
+            for file in current_files:
+                utils.log_message(f"Attempting text extraction from '{file.name}'.", "INFO")
+                extracted = file_processing.extract_text_from_file(file)
+                if extracted:
+                    all_extracted_text.append(extracted)
+                else:
+                    utils.log_message(f"Text extraction failed for '{file.name}'.", "ERROR")
+                    st.error(f"Failed to extract text from '{file.name}'.")
+        
+        if all_extracted_text:
+            extracted = "\n\n---\n\n".join(all_extracted_text)
 
 
             if extracted is not None: # Check for None explicitly
@@ -841,7 +843,7 @@ if current_file:
 
 # --- Initial State Message ---
 else:
-    st.info("⬅️ Upload a `.docx` document using the file uploader in the sidebar to begin.")
+    st.info("⬅️ Upload one or more `.docx` or `.pdf` documents using the file uploader in the sidebar to begin.")
     # Updated caption to reflect context upload change
     st.caption("Optional context files (.txt, .md, .docx, .xlsx, .json, .yaml) can be uploaded per application in Step 3 after identifying applications.")
 

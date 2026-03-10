@@ -4,6 +4,8 @@
 import streamlit as st
 import pandas as pd
 import os
+import requests
+import hashlib
 from typing import Dict, Any, List, Optional
 
 # Import config and utilities
@@ -31,156 +33,277 @@ except NameError as e:
      st.error(f"Failed to import required modules (config, helper.utils). Ensure they exist: {e}")
 
 
+def _normalize_model_ids(model_ids: List[str]) -> List[str]:
+    """Returns a sorted, de-duplicated model id list."""
+    cleaned = {
+        model_id.strip()
+        for model_id in model_ids
+        if isinstance(model_id, str) and model_id.strip()
+    }
+    return sorted(cleaned, key=lambda item: item.lower())
+
+
+def _filter_openai_text_models(model_ids: List[str]) -> List[str]:
+    """
+    Filters out non-text/non-chat OpenAI model ids that are not suitable for ChatOpenAI.
+    """
+    filtered: List[str] = []
+    blocked_terms = (
+        "embedding", "whisper", "tts", "transcribe", "moderation", "dall", "image"
+    )
+
+    for model_id in model_ids:
+        lower_id = model_id.lower()
+        if any(term in lower_id for term in blocked_terms):
+            continue
+        if lower_id.startswith("gpt-") or lower_id.startswith("o") or lower_id.startswith("chatgpt-"):
+            filtered.append(model_id)
+
+    return filtered
+
+
+def _build_fetch_fingerprint(provider: str, credentials: Dict[str, str]) -> str:
+    """Creates a stable hash so model fetching only re-runs when relevant credentials change."""
+    provider_specific_parts = [provider]
+    if provider in {"OpenAI", "Gemini", "Claude", "Groq"}:
+        provider_specific_parts.append(credentials.get("api_key", "").strip())
+    elif provider == "AWS Bedrock":
+        provider_specific_parts.extend([
+            credentials.get("aws_access_key_id", "").strip(),
+            credentials.get("aws_secret_access_key", "").strip(),
+            credentials.get("aws_session_token", "").strip(),
+            credentials.get("region_name", "").strip(),
+        ])
+    elif provider == "Ollama":
+        provider_specific_parts.append(credentials.get("base_url", "http://localhost:11434").strip())
+
+    raw = "|".join(provider_specific_parts)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _can_fetch_provider_models(provider: str, credentials: Dict[str, str]) -> tuple[bool, str]:
+    """Checks whether required credentials/settings are available for model discovery."""
+    if provider in {"OpenAI", "Gemini", "Claude", "Groq"}:
+        if not credentials.get("api_key", "").strip():
+            return False, f"Enter API key to fetch {provider} models."
+        return True, ""
+    if provider == "AWS Bedrock":
+        required = {
+            "aws_access_key_id": "AWS Access Key ID",
+            "aws_secret_access_key": "AWS Secret Access Key",
+            "region_name": "AWS Region Name",
+        }
+        missing = [label for key, label in required.items() if not credentials.get(key, "").strip()]
+        if missing:
+            return False, f"Enter {', '.join(missing)} to fetch AWS Bedrock models."
+        return True, ""
+    if provider == "Ollama":
+        return True, ""
+    return False, f"Dynamic model fetch is not configured for provider '{provider}'."
+
+
+def _fetch_openai_models(api_key: str) -> tuple[List[str], Optional[str]]:
+    url = "https://api.openai.com/v1/models"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        models = [item.get("id", "") for item in payload.get("data", [])]
+        filtered = _filter_openai_text_models(_normalize_model_ids(models))
+        return filtered, None
+    except requests.RequestException as exc:
+        return [], f"OpenAI model fetch failed: {exc}"
+
+
+def _fetch_gemini_models(api_key: str) -> tuple[List[str], Optional[str]]:
+    url = "https://generativelanguage.googleapis.com/v1beta/models"
+    params = {"key": api_key, "pageSize": 1000}
+    models: List[str] = []
+
+    try:
+        next_page_token = ""
+        for _ in range(10):
+            if next_page_token:
+                params["pageToken"] = next_page_token
+            response = requests.get(url, params=params, timeout=15)
+            response.raise_for_status()
+            payload = response.json()
+
+            for item in payload.get("models", []):
+                raw_name = item.get("name", "")
+                model_name = raw_name.replace("models/", "", 1)
+                methods = item.get("supportedGenerationMethods", [])
+                supports_generation = any(method in methods for method in ("generateContent", "generateText"))
+                if model_name and supports_generation and "embedding" not in model_name.lower():
+                    models.append(model_name)
+
+            next_page_token = payload.get("nextPageToken", "")
+            if not next_page_token:
+                break
+
+        return _normalize_model_ids(models), None
+    except requests.RequestException as exc:
+        return [], f"Gemini model fetch failed: {exc}"
+
+
+def _fetch_claude_models(api_key: str) -> tuple[List[str], Optional[str]]:
+    url = "https://api.anthropic.com/v1/models"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        models = [item.get("id", "") for item in payload.get("data", [])]
+        return _normalize_model_ids(models), None
+    except requests.RequestException as exc:
+        return [], f"Claude model fetch failed: {exc}"
+
+
+def _fetch_groq_models(api_key: str) -> tuple[List[str], Optional[str]]:
+    url = "https://api.groq.com/openai/v1/models"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        models = [item.get("id", "") for item in payload.get("data", [])]
+        return _normalize_model_ids(models), None
+    except requests.RequestException as exc:
+        return [], f"Groq model fetch failed: {exc}"
+
+
+def _fetch_bedrock_models(credentials: Dict[str, str]) -> tuple[List[str], Optional[str]]:
+    try:
+        import boto3
+    except ImportError:
+        return [], "boto3 is not installed. Cannot fetch Bedrock models dynamically."
+
+    try:
+        client_kwargs = {
+            "service_name": "bedrock",
+            "region_name": credentials.get("region_name", "").strip(),
+            "aws_access_key_id": credentials.get("aws_access_key_id", "").strip(),
+            "aws_secret_access_key": credentials.get("aws_secret_access_key", "").strip(),
+        }
+        session_token = credentials.get("aws_session_token", "").strip()
+        if session_token:
+            client_kwargs["aws_session_token"] = session_token
+
+        client = boto3.client(**client_kwargs)
+        response = client.list_foundation_models(byOutputModality="TEXT")
+        model_summaries = response.get("modelSummaries", [])
+        models = [item.get("modelId", "") for item in model_summaries]
+        return _normalize_model_ids(models), None
+    except Exception as exc:
+        return [], f"AWS Bedrock model fetch failed: {exc}"
+
+
+def _fetch_provider_models(provider: str, credentials: Dict[str, str]) -> tuple[List[str], Optional[str]]:
+    """Fetches available models from the provider API."""
+    if provider == "OpenAI":
+        return _fetch_openai_models(credentials.get("api_key", "").strip())
+    if provider == "Gemini":
+        return _fetch_gemini_models(credentials.get("api_key", "").strip())
+    if provider == "Claude":
+        return _fetch_claude_models(credentials.get("api_key", "").strip())
+    if provider == "Groq":
+        return _fetch_groq_models(credentials.get("api_key", "").strip())
+    if provider == "AWS Bedrock":
+        return _fetch_bedrock_models(credentials)
+    if provider == "Ollama":
+        base_url = credentials.get("base_url", "http://localhost:11434").strip() or "http://localhost:11434"
+        models = get_ollama_models(base_url)
+        if models:
+            return _normalize_model_ids(models), None
+        return [], f"Could not fetch models from {base_url}. Is Ollama running?"
+
+    return [], f"Dynamic model fetch is not implemented for provider '{provider}'."
+
+
 def render_llm_config_sidebar():
     """Renders the LLM Provider and Credential configuration in the sidebar."""
-    st.header("⚙️ LLM Configuration")
+    st.header("LLM Configuration")
 
     provider_options = list(LLM_PROVIDER_CONFIG.keys())
-
-    # Ensure current provider selection is valid, default if not
     if 'llm_provider' not in st.session_state or st.session_state.llm_provider not in provider_options:
         st.session_state.llm_provider = provider_options[0] if provider_options else None
 
-    # Callback function to update credentials in session state
     def update_credential(key_in_state, widget_key):
-        if widget_key in st.session_state: # Ensure widget key exists before access
+        if widget_key in st.session_state:
             st.session_state.api_credentials[key_in_state] = st.session_state[widget_key]
+            active_provider = st.session_state.get("llm_provider")
+            if active_provider and 'dynamic_model_fetch_fingerprint' in st.session_state:
+                st.session_state.dynamic_model_fetch_fingerprint.pop(active_provider, None)
+            if active_provider == "Ollama" and key_in_state == "base_url":
+                st.session_state.pop("ollama_models_list", None)
         else:
-             log_message(f"Widget key '{widget_key}' not found in session state during callback for '{key_in_state}'.", "WARNING")
+            log_message(f"Widget key '{widget_key}' not found in session state during callback for '{key_in_state}'.", "WARNING")
 
-
-    # Callback function to update fallback key in session state
     def update_fallback_key():
-        if 'openai_fallback_key_widget' in st.session_state: # Check key exists
+        if 'openai_fallback_key_widget' in st.session_state:
             st.session_state.openai_fallback_api_key = st.session_state.openai_fallback_key_widget
         else:
             log_message("Widget key 'openai_fallback_key_widget' not found in session state during callback.", "WARNING")
 
-
     selected_provider = st.selectbox(
         "Select LLM Provider",
         options=provider_options,
-        key="llm_provider", # Use session state key directly
+        key="llm_provider",
         help="Choose the AI provider for generation and analysis."
     )
 
-    # Handle case where no providers are configured
     if not selected_provider:
-         st.warning("No LLM providers configured in `config.LLM_PROVIDER_CONFIG`.")
-         return # Stop rendering config if no provider selected/available
+        st.warning("No LLM providers configured in `config.LLM_PROVIDER_CONFIG`.")
+        return
 
     provider_config = LLM_PROVIDER_CONFIG[selected_provider]
+    if 'api_credentials' not in st.session_state:
+        st.session_state.api_credentials = {}
+    if 'dynamic_models_by_provider' not in st.session_state:
+        st.session_state.dynamic_models_by_provider = {}
+    if 'dynamic_model_fetch_errors' not in st.session_state:
+        st.session_state.dynamic_model_fetch_errors = {}
+    if 'dynamic_model_fetch_fingerprint' not in st.session_state:
+        st.session_state.dynamic_model_fetch_fingerprint = {}
 
-    # Special handling for Ollama to dynamically fetch models
-    if selected_provider == "Ollama":
-        ollama_base_url = st.session_state.api_credentials.get("base_url", "http://localhost:11434").strip()
-        if not ollama_base_url:
-            ollama_base_url = "http://localhost:11434"
-
-        # Function to fetch and cache models
-        def fetch_and_cache_ollama_models():
-            with st.spinner("Fetching Ollama models..."):
-                models = get_ollama_models(ollama_base_url)
-                st.session_state.ollama_models_list = models
-                if not models:
-                    st.warning(f"Could not fetch models from `{ollama_base_url}`. Is Ollama running?")
-                else:
-                    # If current model is no longer valid, reset it
-                    if st.session_state.get("model_name") not in models:
-                        st.session_state.model_name = models[0] if models else None
-
-        # Button to manually refresh
-        if st.button("🔄 Fetch/Refresh Models", key="ollama_refresh_models_btn"):
-            fetch_and_cache_ollama_models()
-
-        # Fetch models if the list is not in session state
-        if 'ollama_models_list' not in st.session_state:
-            fetch_and_cache_ollama_models()
-        
-        available_models = st.session_state.get('ollama_models_list', [])
-
-        if available_models:
-            st.selectbox(
-                f"Select {selected_provider} Model",
-                options=available_models,
-                key="model_name",
-                help=f"Choose a model from your Ollama server. Use 'Fetch/Refresh' if the list is outdated."
-            )
-        else:
-            st.info("No Ollama models found. Please ensure Ollama is running and models are pulled, then click 'Fetch/Refresh Models'.")
-            st.session_state.model_name = None # Clear model name if none are available
-
-    else: # For all other providers
-        # Clear Ollama cache if switching away
-        if 'ollama_models_list' in st.session_state:
-            del st.session_state.ollama_models_list
-
-        available_models = provider_config.get("models", [])
-        
-        # Ensure current model selection is valid for the provider, default if not
-        current_model = st.session_state.get("model_name")
-        if not available_models:
-            st.warning(f"No models listed for {selected_provider} in configuration.")
-            st.session_state.model_name = None
-        # Check if current model is valid *for the selected provider*
-        elif current_model not in available_models:
-            st.session_state.model_name = available_models[0] # Default to first model
-
-        # Render model selection only if models are available
-        if available_models:
-            st.selectbox(
-                f"Select {selected_provider} Model",
-                options=available_models,
-                key="model_name", # Use session state key
-                help=f"Choose a specific model from {selected_provider}."
-            )
-
-    # --- Credentials ---
     st.markdown("**API Credentials**")
     notes = provider_config.get("notes", "")
     if notes:
         st.caption(notes)
 
     required_creds = provider_config.get("credentials", [])
-    if 'api_credentials' not in st.session_state:
-        st.session_state.api_credentials = {}
-
-    # Initialize missing credential keys in session state
-    # Also, set default for Ollama base_url if needed
     for cred_key in required_creds:
         if cred_key not in st.session_state.api_credentials:
-            # Set default for Ollama base_url
             if selected_provider == "Ollama" and cred_key == "base_url":
                 st.session_state.api_credentials[cred_key] = "http://localhost:11434"
             else:
                 st.session_state.api_credentials[cred_key] = ""
 
-    # Render input fields for required credentials
     for cred_key in required_creds:
-        # Skip rendering 'model' for Ollama as it's handled by dropdown above
         if selected_provider == "Ollama" and cred_key == "model":
-            continue # Skip this credential key for Ollama
+            continue
 
-        widget_key = f"cred_{cred_key}_widget" # Unique key for the widget itself
+        widget_key = f"cred_{cred_key}_widget"
         label = cred_key.replace("_", " ").title()
         is_secret = "key" in cred_key.lower() or "secret" in cred_key.lower() or "token" in cred_key.lower()
         input_type = "password" if is_secret else "default"
 
-        # Special handling for Bedrock Embedding Model ID (Dropdown)
         if selected_provider == "AWS Bedrock" and cred_key == "embedding_model_id":
             bedrock_embed_models = provider_config.get("embedding_model_ids", [])
             if bedrock_embed_models:
                 current_embed_model = st.session_state.api_credentials.get(cred_key, "")
                 try:
                     if current_embed_model not in bedrock_embed_models:
-                        current_embed_model = bedrock_embed_models[0] if bedrock_embed_models else ""
-                        if st.session_state.api_credentials.get(cred_key) != current_embed_model:
-                            st.session_state.api_credentials[cred_key] = current_embed_model
+                        current_embed_model = bedrock_embed_models[0]
+                        st.session_state.api_credentials[cred_key] = current_embed_model
                     current_index = bedrock_embed_models.index(current_embed_model) if current_embed_model else 0
                 except ValueError:
                     current_index = 0
-                    if current_embed_model and bedrock_embed_models:
-                        st.session_state.api_credentials[cred_key] = bedrock_embed_models[0]
+                    st.session_state.api_credentials[cred_key] = bedrock_embed_models[0]
 
                 st.selectbox(
                     label,
@@ -190,7 +313,7 @@ def render_llm_config_sidebar():
                     help="Select the Bedrock Embedding Model ID enabled in your AWS account and region.",
                     on_change=update_credential, args=(cred_key, widget_key)
                 )
-            else: # Fallback to text input
+            else:
                 st.text_input(
                     label + " (Enter ID)",
                     type="default",
@@ -199,7 +322,7 @@ def render_llm_config_sidebar():
                     help="Enter the Bedrock Embedding Model ID.",
                     on_change=update_credential, args=(cred_key, widget_key)
                 )
-        else: # Standard text input
+        else:
             st.text_input(
                 label,
                 type=input_type,
@@ -209,7 +332,14 @@ def render_llm_config_sidebar():
                 on_change=update_credential, args=(cred_key, widget_key)
             )
 
-    # --- Fallback Key ---
+    # Force-sync credentials from widget state so model fetch uses latest typed values.
+    for cred_key in required_creds:
+        widget_key = f"cred_{cred_key}_widget"
+        if widget_key in st.session_state:
+            st.session_state.api_credentials[cred_key] = st.session_state.get(widget_key, "")
+
+    effective_credentials = dict(st.session_state.api_credentials)
+
     if selected_provider in FALLBACK_EMBEDDING_PROVIDERS:
         st.markdown("**OpenAI API Key (for RAG Fallback)**")
         st.caption(f"{selected_provider} requires OpenAI embeddings for RAG features.")
@@ -223,14 +353,114 @@ def render_llm_config_sidebar():
             value=st.session_state.openai_fallback_api_key,
             help="Required only if using RAG features (like Generate) with this provider.",
             on_change=update_fallback_key
-         )
+        )
 
+    available_models: List[str] = []
+
+    if selected_provider == "Ollama":
+        if st.button(
+            "Fetch/Refresh Ollama Models",
+            key="ollama_refresh_models_btn",
+            help="Fetch currently available model IDs directly from Ollama."
+        ) or 'ollama_models_list' not in st.session_state:
+            base_url = effective_credentials.get("base_url", "http://localhost:11434").strip() or "http://localhost:11434"
+            with st.spinner("Fetching available Ollama models..."):
+                models = get_ollama_models(base_url)
+                st.session_state.ollama_models_list = models
+                if not models:
+                    st.warning(f"Could not fetch models from `{base_url}`. Is Ollama running?")
+                elif st.session_state.get("model_name") not in models:
+                    st.session_state.model_name = models[0]
+
+        available_models = st.session_state.get('ollama_models_list', [])
+        if available_models:
+            st.caption(f"Using {len(available_models)} models fetched live from Ollama.")
+        else:
+            static_models = provider_config.get("models", [])
+            if static_models:
+                st.caption("Using static model list from configuration. Click refresh to fetch live models.")
+                available_models = static_models
+            else:
+                st.info("No Ollama models found. Please ensure Ollama is running and models are pulled, then click refresh.")
+    else:
+        st.session_state.pop('ollama_models_list', None)
+
+        def fetch_and_cache_provider_models(show_warning_on_error: bool = True):
+            can_fetch, reason = _can_fetch_provider_models(selected_provider, effective_credentials)
+            if not can_fetch:
+                if show_warning_on_error:
+                    st.info(reason)
+                return []
+
+            with st.spinner(f"Fetching available {selected_provider} models..."):
+                models, error = _fetch_provider_models(selected_provider, effective_credentials)
+
+            if models:
+                st.session_state.dynamic_models_by_provider[selected_provider] = models
+                st.session_state.dynamic_model_fetch_errors.pop(selected_provider, None)
+                if st.session_state.get("model_name") not in models:
+                    st.session_state.model_name = models[0]
+                return models
+
+            st.session_state.dynamic_model_fetch_errors[selected_provider] = error or "No models returned by provider."
+            if show_warning_on_error:
+                st.warning(st.session_state.dynamic_model_fetch_errors[selected_provider])
+            return []
+
+        current_fingerprint = _build_fetch_fingerprint(selected_provider, effective_credentials)
+        previous_fingerprint = st.session_state.dynamic_model_fetch_fingerprint.get(selected_provider)
+        can_auto_fetch, _ = _can_fetch_provider_models(selected_provider, effective_credentials)
+        should_auto_fetch = can_auto_fetch and (previous_fingerprint != current_fingerprint)
+
+        if should_auto_fetch:
+            fetch_and_cache_provider_models(show_warning_on_error=False)
+            st.session_state.dynamic_model_fetch_fingerprint[selected_provider] = current_fingerprint
+
+        if st.button(
+            f"Fetch/Refresh {selected_provider} Models",
+            key=f"refresh_models_{sanitize_filename(selected_provider)}_btn",
+            help=f"Fetch currently available model IDs directly from {selected_provider}."
+        ):
+            fetch_and_cache_provider_models(show_warning_on_error=True)
+            st.session_state.dynamic_model_fetch_fingerprint[selected_provider] = _build_fetch_fingerprint(
+                selected_provider,
+                effective_credentials
+            )
+
+        dynamic_models = st.session_state.dynamic_models_by_provider.get(selected_provider, [])
+        static_models = provider_config.get("models", [])
+        available_models = dynamic_models if dynamic_models else static_models
+
+        if dynamic_models:
+            st.caption(f"Using {len(dynamic_models)} models fetched live from {selected_provider}.")
+        elif static_models:
+            st.caption("Using static model list from configuration. Click refresh to fetch live models.")
+        else:
+            st.warning(f"No models listed for {selected_provider} in configuration.")
+
+        last_fetch_error = st.session_state.dynamic_model_fetch_errors.get(selected_provider)
+        if last_fetch_error and not dynamic_models:
+            st.caption(f"Model fetch status: {last_fetch_error}")
+
+    current_model = st.session_state.get("model_name")
+    if not available_models:
+        st.session_state.model_name = None
+    elif current_model not in available_models:
+        st.session_state.model_name = available_models[0]
+
+    if available_models:
+        st.selectbox(
+            f"Select {selected_provider} Model",
+            options=available_models,
+            key="model_name",
+            help=f"Choose a specific model from {selected_provider}."
+        )
 
 def render_context_options_sidebar():
     """Renders information about the optional context folder in the sidebar."""
     # This function might become less relevant if context is only uploaded,
     # but can be kept for informational purposes or future use.
-    st.subheader("🗂️ Optional: App Context Folder")
+    st.subheader("Optional: App Context Folder")
     st.caption(f"Previously, context files were loaded from `{APP_CONTEXT_FOLDER_NAME}`. "
                f"Context is now uploaded directly per application in Step 3.")
 
@@ -359,7 +589,7 @@ def display_results(test_cases_dict: Dict[str, Any]):
     if not test_cases_dict:
         return
 
-    st.subheader("📊 Results Summary")
+    st.subheader("Results Summary")
     successful_apps = 0
     error_apps = 0
     total_cases_generated = 0
@@ -550,7 +780,7 @@ def render_modification_confirmation_ui():
 
             col1, col2 = st.columns([1, 1])
             with col1:
-                if st.button("✅ Apply These Changes", key="apply_all_btn", type="primary"):
+                if st.button("Apply These Changes", key="apply_all_btn", type="primary"):
                     st.session_state.generated_test_cases[app_name] = refactored_data
                     st.success(f"All test cases for application '{app_name}' have been updated.")
                     # Clear modification state
@@ -558,7 +788,7 @@ def render_modification_confirmation_ui():
                     st.session_state.refactored_test_cases = None
                     st.rerun()
             with col2:
-                if st.button("❌ Discard", key="discard_all_btn"):
+                if st.button("Discard", key="discard_all_btn"):
                     st.info("Refactoring discarded.")
                     # Clear modification state
                     st.session_state.refactor_all_request = None
@@ -598,14 +828,14 @@ def render_modification_confirmation_ui():
 
         discard_btn_col, apply_btn_col = st.columns([1, 1])
         with discard_btn_col:
-            if st.button("❌ Discard Change", key="discard_mod_btn"):
+            if st.button("Discard Change", key="discard_mod_btn"):
                 # Clear modification state
                 for k in required_keys: st.session_state[k] = None
                 st.success("Modification discarded.")
                 st.rerun()
 
         with apply_btn_col:
-            if st.button("✅ Apply Change", key="apply_mod_btn", type="primary"):
+            if st.button("Apply Change", key="apply_mod_btn", type="primary"):
                 if 'generated_test_cases' not in st.session_state or prop_app not in st.session_state.generated_test_cases:
                     st.error(f"Cannot apply change: Results for application '{prop_app}' not found in session state.")
                     for k in required_keys: st.session_state[k] = None
@@ -647,7 +877,7 @@ def render_modification_confirmation_ui():
 
 def render_modification_request_ui():
     """Renders the UI to select an application and provide refactoring instructions for all its test cases."""
-    st.subheader("✍️ Refactor All Test Cases") # Changed subheader
+    st.subheader("Refactor All Test Cases") # Changed subheader
 
     valid_apps_for_mod = [
         app for app, cases in st.session_state.get('generated_test_cases', {}).items()
@@ -676,7 +906,7 @@ def render_modification_request_ui():
     )
 
     button_disabled = not (sel_app_mod and mod_instructions) # Updated button disable logic
-    if st.button("🚀 Get Refactored Versions for All Cases", key="get_refactor_btn", disabled=button_disabled): # Updated button text
+    if st.button("Get Refactored Versions for All Cases", key="get_refactor_btn", disabled=button_disabled): # Updated button text
         app_test_cases = st.session_state.generated_test_cases.get(sel_app_mod, [])
         # Store request for bulk refactoring
         st.session_state.refactor_all_request = {
@@ -901,9 +1131,10 @@ def render_apply_ai_review_changes_button(app_name: str):
     The actual logic for applying changes will reside in main_app.py.
     """
     # This key needs to be unique and handled in main_app.py
-    if st.button(f"✅ Apply Accepted AI Changes for `{app_name}`", key=f"apply_ai_changes_{app_name}_btn", type="primary"):
+    if st.button(f"Apply Accepted AI Changes for `{app_name}`", key=f"apply_ai_changes_{app_name}_btn", type="primary"):
         # Set a flag or trigger in session state that main_app.py can react to
         st.session_state.trigger_apply_ai_changes = app_name
         # No direct action here; main_app.py will handle it and rerun.
         log_message(f"UI: 'Apply AI Changes' button clicked for app '{app_name}'. Flag set.", "INFO")
         st.rerun() # Rerun to allow main_app.py to process the flag
+

@@ -5,7 +5,7 @@ import os
 # --- Application Settings ---
 APP_TITLE = "📄 TestGen AI 🧪"
 PAGE_LAYOUT = "wide"
-ACCEPTED_FILE_TYPES = ["docx"]
+ACCEPTED_FILE_TYPES = ["docx", "pdf"]
 APP_CONTEXT_FOLDER_NAME = "app_context" # Folder name relative to script execution dir
 NO_CONTEXT_OPTION = "None" # Display text for selecting no context file
 DEFAULT_TEMPERATURE = 0.0 # Default LLM temperature for deterministic output
